@@ -225,7 +225,7 @@ void dm_fps_state_apply(void) {
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
     // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too
     // Above 1.0 the game renders its 3D views larger than it sized its own per-frame texture pool for, which the host
-    // cannot size from outside. How far it goes is per game: Breath of the Wild 1.9.0 runs at 1.35 and dies at 1.50
+    // cannot size from outside. How far it goes is per game: Breath of the Wild 1.9.0 runs at 1.40 and dies at 1.45
     // (the allocation fails, the game takes the null back, SIGSEGV at main+0xed7128 addr 0x20 while the field loads).
     // Allowed with a warning rather than refused, since the working range is useful and only measurement finds it.
     // Note the game still composites into its own 1920x1080 window, so this supersamples into that, it does not widen it.
