@@ -1,6 +1,8 @@
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <MetalFX/MetalFX.h>
+#undef I   // MetalFX pulls in <complex.h>, whose "I" (imaginary unit) collides with local identifiers here
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -8235,6 +8237,70 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     [en endEncoding];
     return 1;
 }
+// ---------- MetalFX spatial upscaling of the presented image (DM_METALFX=1, off by default) ----------
+// The game's image (Breath of the Wild: 1920x1080) is stretched to the drawable (iPad Pro 13" M4: 2752x2064,
+// so 2.0x per axis) by one bilinear sample in the present shader. That single filter, not the game's render
+// scale, is the dominant source of aliasing on a panel this much larger than the game's output.
+// MTL4FXSpatialScaler reconstructs the same upscale instead. It needs no motion vectors and no depth, so it
+// applies to every game without per-game work, and it runs on the Metal 4 command buffer the present already uses.
+// Only the whole-image case is handled (crop == the whole texture); a cropped present falls back to the bilinear path.
+static int metalfx_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_METALFX"); v = e && !strcmp(e, "1");
+                 if (v) MLOG("DM_METALFX=1: the presented image is upscaled with MTLFXSpatialScaler instead of a bilinear sample"); }
+    return v;
+}
+// DM_METALFX_OUT=0.5 to 2.0 (default 1.0): the scaler's output size as a share of the present viewport.
+// 1.0 reconstructs straight to screen size. Above 1.0 reconstructs larger and the present blit samples it
+// back down, which is supersampling: more edge detail for more GPU time. Below 1.0 is cheaper and softer.
+// The viewport already keeps the game's aspect ratio, so scaling it keeps that too.
+static double metalfx_out(void) {
+    static double v = -1;
+    if (v < 0) {
+        const char *e = getenv("DM_METALFX_OUT"); v = 1.0;
+        if (e) { char *end; double f = strtod(e, &end);
+                 if (end == e || *end || !(f >= 0.5 && f <= 4.0)) MLOG("[RED] DM_METALFX_OUT=%s: must be 0.5 to 4.0; using 1.0", e);
+                 else v = f; }
+    }
+    return v;
+}
+static id g_fx_scaler; static id<MTL4Compiler> g_fx_compiler; static id<MTLTexture> g_fx_out;
+static NSUInteger g_fx_iw, g_fx_ih, g_fx_ow, g_fx_oh; static MTLPixelFormat g_fx_fmt = MTLPixelFormatInvalid;
+static int g_fx_failed;
+// Returns the upscaled texture (iw x ih -> ow x oh), or nil to use the bilinear path
+static id<MTLTexture> fx_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger ow, NSUInteger oh) {
+    if (g_fx_failed || ow <= src.width || oh <= src.height) return nil;   // nothing to gain when not upscaling
+    if (@available(iOS 26.0, macOS 26.0, *)) {} else { g_fx_failed = 1; return nil; }
+    MTLPixelFormat fmt = src.pixelFormat;
+    if (!g_fx_scaler || g_fx_iw != src.width || g_fx_ih != src.height || g_fx_ow != ow || g_fx_oh != oh || g_fx_fmt != fmt) {
+        if (!g_fx_compiler) {
+            MTL4CompilerDescriptor *cd = [MTL4CompilerDescriptor new]; NSError *e = nil;
+            g_fx_compiler = [g_dev newCompilerWithDescriptor:cd error:&e];
+            if (!g_fx_compiler) { MLOG("[RED] DM_METALFX: no Metal 4 compiler (%s); keeping the bilinear present", e.localizedDescription.UTF8String); g_fx_failed = 1; return nil; }
+        }
+        MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
+        d.inputWidth = src.width; d.inputHeight = src.height; d.outputWidth = ow; d.outputHeight = oh;
+        d.colorTextureFormat = fmt; d.outputTextureFormat = fmt;
+        d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;   // the swapchain holds display-referred values
+        id s = [d newSpatialScalerWithDevice:g_dev compiler:g_fx_compiler];
+        if (!s) { MLOG("[RED] DM_METALFX: the spatial scaler could not be made (%lux%lu -> %lux%lu, format %lu); keeping the bilinear present",
+                       (unsigned long)src.width, (unsigned long)src.height, (unsigned long)ow, (unsigned long)oh, (unsigned long)fmt); g_fx_failed = 1; return nil; }
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:ow height:oh mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite;
+        td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> out = [g_dev newTextureWithDescriptor:td];
+        if (!out) { MLOG("[RED] DM_METALFX: the %lux%lu output texture could not be made; keeping the bilinear present", (unsigned long)ow, (unsigned long)oh); g_fx_failed = 1; return nil; }
+        if (g_fx_out) defer_obj_unref(g_fx_out);
+        g_fx_scaler = s; g_fx_out = out;
+        g_fx_iw = src.width; g_fx_ih = src.height; g_fx_ow = ow; g_fx_oh = oh; g_fx_fmt = fmt;
+        MLOG("DM_METALFX: spatial scaler %lux%lu -> %lux%lu (format %lu)", (unsigned long)g_fx_iw, (unsigned long)g_fx_ih, (unsigned long)ow, (unsigned long)oh, (unsigned long)fmt);
+    }
+    id<MTL4FXSpatialScaler> sc = g_fx_scaler;
+    sc.colorTexture = src; sc.outputTexture = g_fx_out;
+    [sc encodeToCommandBuffer:cb];
+    return g_fx_out;
+}
+
 static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int uv_i) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -8254,15 +8320,27 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    // MetalFX: upscale the whole image to the viewport first, then the blit below samples it 1:1.
+    // Encoded before the render pass so the scaler's own work is not nested inside it.
+    id<MTLTexture> blit_src = present_raw_src(src);
+    NSUInteger sw = src.width, sh = src.height;   // the blit source's size: the upscaler replaces it
+    if (metalfx_on() && cx == 0 && cy == 0 && cw == sw && ch == sh) {
+        double f = metalfx_out();
+        NSUInteger ow = (NSUInteger)(vp.width * f + 0.5), oh = (NSUInteger)(vp.height * f + 0.5);
+        if (ow > 8192) { oh = oh * 8192 / ow; ow = 8192; }   // Metal's largest 2D texture on this hardware
+        if (oh > 8192) { ow = ow * 8192 / oh; oh = 8192; }
+        id<MTLTexture> up = fx_upscale(cb, blit_src, ow, oh);
+        if (up) { blit_src = up; sw = cw = up.width; sh = ch = up.height; }
+    }
     id<MTL4RenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     if (!en) { MLOG("[RED] failed to create the M4 present render encoder"); return 0; }
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
-    [g_present_args setTexture:present_raw_src(src).gpuResourceID atIndex:0];
+    [g_present_args setTexture:blit_src.gpuResourceID atIndex:0];
     [g_present_args setSamplerState:g_blit_samp.gpuResourceID atIndex:0];
     float *uv = g_present_uv[uv_i].contents;
-    uv[0] = (float)cx / src.width; uv[1] = (float)cy / src.height; uv[2] = (float)cw / src.width; uv[3] = (float)ch / src.height;
-    uv[4] = (cx + 0.5f) / src.width; uv[5] = (cy + 0.5f) / src.height; uv[6] = (cx + cw - 0.5f) / src.width; uv[7] = (cy + ch - 0.5f) / src.height;
+    uv[0] = (float)cx / sw; uv[1] = (float)cy / sh; uv[2] = (float)cw / sw; uv[3] = (float)ch / sh;
+    uv[4] = (cx + 0.5f) / sw; uv[5] = (cy + 0.5f) / sh; uv[6] = (cx + cw - 0.5f) / sw; uv[7] = (cy + ch - 0.5f) / sh;
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [g_present_args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
