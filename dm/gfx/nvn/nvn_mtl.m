@@ -353,7 +353,7 @@ void mtl_init(void) {
     g_present_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
     if (!g_present_args) MDIE("failed to create the present argument table: %s", ate.localizedDescription.UTF8String);
     for (int i = 0; i < 3; i++) {
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];   // 8 crop + 4 box filter
         if (!g_present_uv[i]) MDIE("failed to create present UV buffer[%d]", i);
         res_add(g_present_uv[i]);
     }
@@ -3652,7 +3652,18 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     d.mipFilter = p.minf <= 1 ? MTLSamplerMipFilterNotMipmapped : (p.minf == 2 || p.minf == 3) ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear;
     d.sAddressMode = wrapm(p.ws); d.tAddressMode = wrapm(p.wt); d.rAddressMode = wrapm(p.wr);
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
-    d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
+    // DM_ANISO=2..16 raises the game's own anisotropy to at least that, for every game and every sampler.
+    // The games were built for a handheld and mostly ask for 1, so ground and wall textures blur at a glancing
+    // angle. Only sampling changes: no render target, no allocation, and a sampler that already asks for more
+    // keeps what it asked for. Mip filtering has to be on for it to do anything, which the clamp below respects.
+    {
+        float a = p.aniso;
+        static float force = -1;
+        if (force < 0) { const char *e = getenv("DM_ANISO"); force = e ? strtof(e, NULL) : 0;
+                         if (force > 1) MLOG("DM_ANISO=%g: every sampler filters at least this anisotropy", force); }
+        if (force > a) a = force;
+        d.maxAnisotropy = a < 1 ? 1 : a > 16 ? 16 : (NSUInteger)a;
+    }
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     // Reduction (NVN 1 min / 2 max): the minimum or maximum of the texels a filtered sample covers, per channel (Metal 26). Pokémon Legends: Z-A builds its depth pyramid with a min sampler
     // (151607c7a92386cc reads the level above at an explicit LOD) and tests occlusion boxes against it; averaged, the pyramid is nearer than the scene at depth edges. Metal ignores the reduction
@@ -7859,7 +7870,10 @@ void mtl_exec(const uint8_t *p) {
 }
 
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
-static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
+static id<MTLRenderPipelineState> g_blit_pso, g_sharp_pso;
+// DM_SHARPEN=0..1: contrast adaptive sharpening of the final picture (0 = off). Every game, no game knowledge needed.
+static float sharpen_amount(void) { static float v = -1; if (v < 0) { const char *e = getenv("DM_SHARPEN"); v = e ? strtof(e, NULL) : 0; if (v < 0) v = 0; if (v > 1) v = 1;
+    if (v > 0) MLOG("DM_SHARPEN=%.2f: the presented picture is sharpened", v); } return v; } static MTLPixelFormat g_blit_fmt;
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
@@ -8168,8 +8182,38 @@ static void present_pipeline(MTLPixelFormat format) {
             "#include <metal_stdlib>\nusing namespace metal;\n"
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
-            "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "struct Crop { float4 rect; float4 edge; float4 box; };\n"
+            // box.x = taps per axis (1 = one bilinear sample, as before), box.yz = one source texel in uv.
+            // A single bilinear tap reducing by more than 2:1 reads 4 texels out of N*N and throws the rest away,
+            // which is why MetalFX output above 100% looked no sharper. With n taps per axis this averages the
+            // whole footprint, so reconstructing large and sampling down is real supersampling.
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
+            "  float2 uv = clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw);\n"
+            "  int n = int(c.box.x);\n"
+            "  if (n <= 1) return t.sample(s, uv);\n"
+            "  float4 a = 0; float w = 0;\n"
+            "  for (int y = 0; y < n; y++) for (int x = 0; x < n; x++) {\n"
+            "    float2 o = (float2(x, y) - 0.5 * float(n - 1)) * c.box.yz;\n"
+            "    a += t.sample(s, clamp(uv + o, c.edge.xy, c.edge.zw)); w += 1.0;\n"
+            "  }\n"
+            "  return a / w;\n"
+            "}\n"
+            // Sharpen: contrast adaptive, the 5 tap cross around the pixel. box.w = strength (0 = off).
+            // Runs on the final picture, so it works for every game whatever it renders. The low pass is the
+            // mean of the four neighbours; adding back the difference lifts edges without touching flat areas.
+            // Clamped to the neighbourhood min and max so it cannot ring or blow out.
+            "fragment float4 sharp(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
+            "  float2 uv = clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw);\n"
+            "  float2 d = c.box.yz;\n"
+            "  float3 e = t.sample(s, uv).rgb;\n"
+            "  float3 n0 = t.sample(s, clamp(uv + float2(-d.x, 0), c.edge.xy, c.edge.zw)).rgb;\n"
+            "  float3 n1 = t.sample(s, clamp(uv + float2( d.x, 0), c.edge.xy, c.edge.zw)).rgb;\n"
+            "  float3 n2 = t.sample(s, clamp(uv + float2(0, -d.y), c.edge.xy, c.edge.zw)).rgb;\n"
+            "  float3 n3 = t.sample(s, clamp(uv + float2(0,  d.y), c.edge.xy, c.edge.zw)).rgb;\n"
+            "  float3 lo = min(min(n0, n1), min(n2, n3)), hi = max(max(n0, n1), max(n2, n3));\n"
+            "  float3 r = e + (e - (n0 + n1 + n2 + n3) * 0.25) * c.box.w;\n"
+            "  return float4(clamp(r, min(lo, e), max(hi, e)), 1);\n"
+            "}\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
@@ -8178,6 +8222,9 @@ static void present_pipeline(MTLPixelFormat format) {
         pd.colorAttachments[0].pixelFormat = format;
         g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!g_blit_pso) MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);
+        pd.fragmentFunction = [lib newFunctionWithName:@"sharp"];
+        g_sharp_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!g_sharp_pso) MLOG("[RED] sharpen pipeline failed (%s); the setting will do nothing", e.localizedDescription.UTF8String);
         g_blit_fmt = format;
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
@@ -8228,9 +8275,10 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    [en setRenderPipelineState:(sharpen_amount() > 0 && g_sharp_pso) ? g_sharp_pso : g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height,
+                    1, 1.0f / src.width, 1.0f / src.height, sharpen_amount()};   // box filter: 1 tap on this path (no MetalFX here)
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -8341,9 +8389,16 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     float *uv = g_present_uv[uv_i].contents;
     uv[0] = (float)cx / sw; uv[1] = (float)cy / sh; uv[2] = (float)cw / sw; uv[3] = (float)ch / sh;
     uv[4] = (cx + 0.5f) / sw; uv[5] = (cy + 0.5f) / sh; uv[6] = (cx + cw - 0.5f) / sw; uv[7] = (cy + ch - 0.5f) / sh;
+    // Box filter when the blit reduces: one bilinear tap covers 2x2 texels, so a 3:1 or 4:1 reduction throws most
+    // of the source away. n taps per axis average the whole footprint instead (capped at 4, 16 samples)
+    { float r = (float)cw / (float)vp.width, rh = (float)ch / (float)vp.height; if (rh > r) r = rh;
+      int n = (int)(r + 0.5f); if (n < 1) n = 1; if (n > 4) n = 4;
+      uv[8] = (float)n; uv[9] = 1.0f / sw; uv[10] = 1.0f / sh; uv[11] = sharpen_amount(); }
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [g_present_args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp];
+    // sharpening replaces the box filter: both read the same uv buffer, so only the pipeline changes
+    [en setRenderPipelineState:(sharpen_amount() > 0 && g_sharp_pso) ? g_sharp_pso : g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     m4_end(en);
     return 1;
