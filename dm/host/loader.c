@@ -224,8 +224,15 @@ void dm_fps_state_apply(void) {
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
     // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too
+    // Above 1.0 the game renders its 3D views larger than it sized its own per-frame texture pool for, which the host
+    // cannot size from outside. How far it goes is per game: Breath of the Wild 1.9.0 runs at 1.35 and dies at 1.50
+    // (the allocation fails, the game takes the null back, SIGSEGV at main+0xed7128 addr 0x20 while the field loads).
+    // Allowed with a warning rather than refused, since the working range is useful and only measurement finds it.
+    // Note the game still composites into its own 1920x1080 window, so this supersamples into that, it does not widen it.
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
-    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 2.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 2.0; keeping the game's size", rs); sc = 1.0f; }
+              else { LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc);
+                     if (sc > 1.0f) LOG("[RED] DM_RENDER_SCALE=%.2f is above the game's own size: its per-frame texture pool was not sized for this and the game may stop when a scene needs more than the pool holds", sc); } }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
