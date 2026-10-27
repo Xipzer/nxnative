@@ -200,3 +200,31 @@ HLE_FORCE("_ZN2nn5album21GetSharePostedLastUrlEPcmRKNS0_7ShareIdE", "URL of the 
 HLE_FORCE("_ZN2nn5album14ShowAlbumFilesEv", "album applet: not shown", Result, h_album_Show, void) { return RES_FAIL; }
 // Pokémon Legends: Z-A (SDK 19): a screenshot of the current frame, taken by the capture service
 HLE_FORCE("_ZN2nn5album21SaveCurrentScreenshotENS0_17AlbumReportOptionE", "screenshot of the current frame (capsrv): no album, fails", Result, h_album_SaveCur, int report) { (void)report; LOG("album::SaveCurrentScreenshot (no album)"); return RES_FAIL; }
+
+// ---------- bluetooth: Bluetooth LE (Pokémon Scarlet / Violet 4.0.0 and its GO Plus + accessory, SDK 13.3.13). The adapter is there and finds nothing ----------
+// InitializeBle opens the bt service itself (nn::bluetooth::hal::user::InitializeBluetoothUserInterface), which the host does not serve, and the game aborted there in nnMain (sdk+0xaec1c).
+// Scans start and stop and never report a device, so no connection is ever made; every call on a connection fails. The Gatt* objects are the SDK's own and run as they are
+HLE_FORCE("_ZN2nn9bluetooth13InitializeBleEv", "Bluetooth LE: initialized, the host has no device to report", Result, h_bt_InitBle, void) { return RES_OK; }
+#define BT_EVENT(sym, fn) HLE_FORCE(sym, "Bluetooth LE event: bound, never signaled", Result, fn, void *ev) { if (ev) hle_bind_system_event(ev, 0); return RES_OK; }
+BT_EVENT("_ZN2nn9bluetooth19AcquireBleScanEventEPNS_2os15SystemEventTypeE", h_bt_EvScan)
+BT_EVENT("_ZN2nn9bluetooth37AcquireBleConnectionStateChangedEventEPNS_2os15SystemEventTypeE", h_bt_EvConn)
+BT_EVENT("_ZN2nn9bluetooth31AcquireBleServiceDiscoveryEventEPNS_2os15SystemEventTypeE", h_bt_EvDisc)
+BT_EVENT("_ZN2nn9bluetooth24AcquireBleMtuConfigEventEPNS_2os15SystemEventTypeE", h_bt_EvMtu)
+BT_EVENT("_ZN2nn9bluetooth28AcquireBleGattOperationEventEPNS_2os15SystemEventTypeE", h_bt_EvGatt)
+HLE_FORCE("_ZN2nn9bluetooth23StartBleScanSmartDeviceERKNS0_17GattAttributeUuidE", "Bluetooth LE scan: started, never finds a device", Result, h_bt_ScanOn, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth22StopBleScanSmartDeviceEv", "Bluetooth LE scan: stopped", Result, h_bt_ScanOff, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth16GetBleScanResultEPNS0_13BleScanResultEi", "Bluetooth LE scan results: none", int, h_bt_ScanRes, void *out, int n) { (void)out; (void)n; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth24GetBleConnectionInfoListEPNS0_17BleConnectionInfoEi", "Bluetooth LE connections: none", int, h_bt_Conns, void *out, int n) { (void)out; (void)n; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth19GetBleScanParameterEPNS0_17GattAttributeUuidEi", "Bluetooth LE scan parameter: none", Result, h_bt_ScanParam, void *uuid, int id) { (void)uuid; (void)id; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth33RegisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "Bluetooth LE notification registration: accepted, never fires", Result, h_bt_RegNotify, const void *u) { (void)u; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth35UnregisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "Bluetooth LE notification registration: removed", Result, h_bt_UnregNotify, const void *u) { (void)u; return RES_OK; }
+#define BT_FAIL(sym, what, fn, ...) HLE_FORCE(sym, "Bluetooth LE " what ": fails, nothing connected", Result, fn, __VA_ARGS__) { return RES_FAIL; }
+BT_FAIL("_ZN2nn9bluetooth19ConnectToGattServerERKNS0_7AddressE", "connect", h_bt_Connect, const void *a)
+BT_FAIL("_ZN2nn9bluetooth24DisconnectFromGattServerEj", "disconnect", h_bt_Disconnect, unsigned h)
+BT_FAIL("_ZN2nn9bluetooth15ConfigureBleMtuEjt", "MTU", h_bt_Mtu, unsigned h, unsigned mtu)
+BT_FAIL("_ZN2nn9bluetooth14GetGattServiceEPNS0_11GattServiceERKNS0_17GattAttributeUuidEj", "service lookup", h_bt_Service, void *s, const void *u, unsigned h)
+BT_FAIL("_ZN2nn9bluetooth22ReadGattCharacteristicERKNS0_18GattCharacteristicE", "read", h_bt_Read, const void *c)
+BT_FAIL("_ZN2nn9bluetooth23WriteGattCharacteristicERKNS0_18GattCharacteristicE", "write", h_bt_Write, const void *c)
+BT_FAIL("_ZN2nn9bluetooth36EnableGattCharacteristicNotificationERKNS0_18GattCharacteristicEb", "notification", h_bt_Notify, const void *c, unsigned on)
+BT_FAIL("_ZN2nn9bluetooth19WriteGattDescriptorERKNS0_14GattDescriptorE", "descriptor write", h_bt_WriteDesc, const void *d)
+BT_FAIL("_ZN2nn9bluetooth22GetGattOperationResultEPNS0_26BleClientGattOperationInfoE", "operation result", h_bt_OpResult, void *info)

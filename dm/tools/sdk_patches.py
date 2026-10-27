@@ -79,6 +79,33 @@ CUTS = {
     (0x37c140, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x37c1dc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x37c33c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11.4.0): the same node area cut. nninitStartup (main+0x2779d20) calls StandardAllocator::Initialize with virtual address memory
+  # (a 20 MB heap; everything else in address regions), which aborted in its Initialize (sdk+0x2f98e4) before the first frame. The constructor is at sdk+0x34e038 (limit = alias start
+  # + 0x3fe00000 at +0x10, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x34e0e4)
+  'b39add63421be525d352e576dab438d3': [
+    (0x34e048, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34e0e4, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # The Witcher 3: Wild Hunt - Complete Edition 4.04b (v262144, 0100E67012924000) sdk (SDK 15.3.0): the same node area cut. Its main reserves a 6 GB address region at start-up
+  # (cut to 3 GB in its profile's patches.py) and commits pages into it with AllocateMemoryPages. The AddressRegionManager is at the offsets of Paper Mario's SDK 15.3.2 build:
+  # the constructor at sdk+0x12e0e0, the node area limit at +0x12e0f0, its occupied length at +0x12e184
+  'd5a1029a57d8cd4fdf4eacad87b0cfd0': [
+    (0x12e0f0, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x12e184, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x12e2e0, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as Paper Mario\'s build: its two regions fit side by side)'),
+  ],
+  # Pokémon Brilliant Diamond 1.3.0 (v393216) sdk (SDK 11.4.3, Unity 2019.4.27f1; Shining Pearl ships the same game): the same node area cut. nninitStartup (main+0x2c1ce0) calls
+  # StandardAllocator::Initialize(nullptr, pool − used) with virtual address memory, as Patrick's Parabox, which aborted in its Initialize (sdk+0x2f98e4). The constructor is at
+  # sdk+0x34e0b8: limit at +0x34e0c8, occupied length at +0x34e164
+  '2d369d9999e3e10e665106f840ffff9b': [
+    (0x34e0c8, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34e164, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # Pokémon Scarlet 4.0.0 (v786432) sdk (SDK 13.3.13; Violet 4.0.0 ships the same build): the same node area cut. nninitStartup (main+0x2b7da90 → main+0x167d510) initializes the game's
+  # StandardAllocator with virtual address memory (Trinity, as Z-A), which aborted in its Initialize (sdk+0x3251a0). The constructor: limit at +0x37c760, occupied length at +0x37c7fc
+  'bb560bdfa85b4a97786ae2c3b7995df6': [
+    (0x37c760, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x37c7fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) sdk (SDK 19.3.11): the same node area cut. The constructor is at sdk+0x1423ec (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte
   # nodes, the area then registered as occupied at +0x142468). With main's allocator region below, the guest block fits the 5 GB proven on a phone
