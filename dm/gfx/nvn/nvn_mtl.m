@@ -10245,15 +10245,15 @@ static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
 // above that, reconstructing large and sampling down is supersampling, which costs GPU time and nothing else. Read once
 // DM_QUALITY_AUTO=1: hold the frame rate by giving up picture rather than frames. A device that renders every frame
 // inside its budget cold stops doing so once its GPU clock falls, and without this the frame rate is what gives.
-//   step 1  the upscaler reconstructs at the viewport (DM_PRESENT_UPSCALE_OUT back to 1.0)
-//   step 2  render scale no higher than 1.0
-//   step 3  render scale no higher than 0.85
+//   the upscaler back to the viewport, then no supersampling, then 85, 75 and 65 % of the game's own size; only the
+//   steps that lower something from the player's settings are taken, so a player at 100 % still has three
 // Never above what the player chose. Frame time is the only input: on an iPhone 17 Pro Max a third of frames were
 // dropped for ten minutes while NSProcessInfo's thermal state read nominal throughout, and one scene's GPU time went
 // 8.40 ms cold to 21.83 ms warm, still nominal. A step back up that is followed by a fall within ten seconds doubles
 // the quiet it needs next time (3 windows of 60 presents, up to 16), so the picture settles instead of hunting.
 extern uint8_t *dm_fps_state;   // loader.c: +0 float target fps, +0x10 float render scale
 static int g_q_step;
+static float fx_out(void);   // below: DM_PRESENT_UPSCALE_OUT
 static int q_auto(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("DM_QUALITY_AUTO"); v = e && atoi(e) ? 1 : 0;
@@ -10265,21 +10265,29 @@ static void q_tick(void) {
     // The cap the frame step uses now, not the target the player picked: while the thermal cap holds 30, a 33 ms frame is on time
     extern int nvn_fps_cap_now(void); float target = (float)nvn_fps_cap_now();
     if (target <= 0) return;   // the game paces itself: no budget to miss
-    static uint64_t last_ns, up_ns; static int late, seen, clean, need = 3; static float player = -1;
+    static uint64_t last_ns, up_ns; static int late, seen, clean, need = 3, nlad; static float player = -1, lad[8];
     uint64_t now = now_ns(), dt = last_ns ? now - last_ns : 0; last_ns = now;
     if (!dt) return;
+    if (player < 0) {   // the ladder, built once from the player's own settings: only steps that lower something
+        memcpy(&player, dm_fps_state + 0x10, sizeof player);
+        float base = player < 1.0f ? player : 1.0f;
+        lad[nlad++] = player;                                  // step 0: as chosen
+        if (fx_out() > 1.0f) lad[nlad++] = player;            // the upscaler back to the viewport (g_q_step >= 1 below), scale kept
+        if (player > 1.0f) lad[nlad++] = base;                 // no supersampling
+        const float k[] = {0.85f, 0.75f, 0.65f};               // then below the game's own size: a 100% player still has three steps
+        for (int i = 0; i < 3; i++) lad[nlad++] = base * k[i];
+        MLOG("adaptive quality: %d steps, render scale %.2f down to %.2f", nlad - 1, player, lad[nlad - 1]);
+    }
     if ((double)dt > 1.25e9 / target) late++;
     if (++seen < 60) return;
     int was = g_q_step;
-    if (late >= 20) { if (g_q_step < 3) g_q_step++; if (up_ns && now - up_ns < 10000000000ull && need < 16) need *= 2; clean = 0; }
+    if (late >= 20) { if (g_q_step < nlad - 1) g_q_step++; if (up_ns && now - up_ns < 10000000000ull && need < 16) need *= 2; clean = 0; }
     else if (!late) { if (++clean >= need && g_q_step > 0) { g_q_step--; up_ns = now; clean = 0; } }
     else clean = 0;
-    if (g_q_step != was) MLOG("quality step %d → %d (%d of %d presents late, %d quiet windows needed)", was, g_q_step, late, seen, need);
+    if (g_q_step != was) MLOG("quality step %d → %d, render scale %.2f (%d of %d presents late, %d quiet windows needed)", was, g_q_step, lad[g_q_step], late, seen, need);
     late = seen = 0;
     float cur; memcpy(&cur, dm_fps_state + 0x10, sizeof cur);
-    if (player < 0) player = cur;
-    float cap = g_q_step >= 3 ? 0.85f : g_q_step >= 2 ? 1.0f : 99.0f, use = player < cap ? player : cap;
-    if (use != cur) memcpy(dm_fps_state + 0x10, &use, sizeof use);
+    if (lad[g_q_step] != cur) memcpy(dm_fps_state + 0x10, &lad[g_q_step], sizeof cur);
 }
 static float fx_out(void) {
     static float v = -1;
