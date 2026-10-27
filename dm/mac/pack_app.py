@@ -87,8 +87,8 @@ def swift_sources():   # the settings window, with the iOS launcher's model and 
 def build_launcher(out, minos, clang, swiftc, sdk):   # launcher.c's main, linked by swiftc with the settings window (no Swift main: -parse-as-library)
     with tempfile.TemporaryDirectory(dir=out.parents[3]) as t:
         obj = Path(t) / 'launcher.o'
-        run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, HERE / 'launcher.c'])
-        run([swiftc, '-sdk', sdk, '-target', f'arm64-apple-macos{minos}', '-O', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
+        run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O3', '-flto=full', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, HERE / 'launcher.c'])
+        run([swiftc, '-sdk', sdk, '-target', f'arm64-apple-macos{minos}', '-O', '-whole-module-optimization', '-lto=llvm-full', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
              '-o', out, *swift_sources(), obj, '-framework', 'CoreFoundation', '-framework', 'AppKit', '-framework', 'SwiftUI'])
 
 
