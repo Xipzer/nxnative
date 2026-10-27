@@ -43,6 +43,8 @@ id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { (v
 void mfx_note_scene(void) {}
 void mfx_note_depth(id<MTLTexture> depth) { (void)depth; }
 void mfx_note_objmv(id<MTLTexture> t) { (void)t; }
+void mfx_note_latemv(id<MTLTexture> t) { (void)t; }
+void mfx_late_ab(int on) { (void)on; }
 void mfx_note_camera(const float *cam, int n) { (void)cam; (void)n; }
 id<MTLResidencySet> mfx_residency(void) { return nil; }
 int mfx_frame_prepare(double frame_s) { (void)frame_s; return -1; }
@@ -65,7 +67,7 @@ static struct {
     id<MTL4FXFrameInterpolator> fi;
     NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat scene_fmt;
     id<MTLTexture> scene[2], ui, mv, out[MFX_OUT], outv[MFX_OUT];
-    id<MTLTexture> pdepth, objmv; uint64_t pdepth_frame;   // the previous interpolated frame's depth (copied after its motion), and its g.frames
+    id<MTLTexture> pdepth, objmv, latemv; uint64_t pdepth_frame, latemv_frame;   // the previous interpolated frame's depth (copied after its motion), and its g.frames
     id<MTLResidencySet> rs;
     id<MTLComputePipelineState> mv_ps;
     id<MTL4ArgumentTable> mv_args[MFX_OUT];
@@ -191,7 +193,9 @@ id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { en
 id<MTLResidencySet> mfx_residency(void) { return g.rs; }
 void mfx_note_scene(void) { g.scene_ok = 1; }
 void mfx_note_depth(id<MTLTexture> d) { if (d && d.pixelFormat == MTLPixelFormatDepth32Float && d.textureType == MTLTextureType2D) g.depth = d; }
-void mfx_note_objmv(id<MTLTexture> t) { g.objmv = t; }   // object motion (nvn_mtl.m mv_pass_setup): the previous NDC position of each G-buffer pixel
+void mfx_note_objmv(id<MTLTexture> t) { g.objmv = t; }
+void mfx_note_latemv(id<MTLTexture> t) { g.latemv = t; g.latemv_frame = g.frames + 1; }   // surfaces drawn over the G-buffer's depth (water), this frame
+static int g_late_ab = 1; void mfx_late_ab(int on) { g_late_ab = on; }   // object motion (nvn_mtl.m mv_pass_setup): the previous NDC position of each G-buffer pixel
 void mfx_note_camera(const float *c, int n) {
     if (n < 84) return;
     for (int i = 0; i < 84; i++) g.cam[i] = c[i];
@@ -219,7 +223,7 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
     if (!g.mv_ps) {
         static const char *src =
             "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct P { float4x4 reproj; float2 size; float2 inv_size; float yflip; float dyn, pad1, pad2; };\n"
+            "struct P { float4x4 reproj; float2 size; float2 inv_size; float yflip; float dyn, pad1, pad2, late; };\n"
             // view distance from a depth value (not reversed, infinite far plane: z = near / (1 - d)), in units of near
             "static float vz(float d) { return 1.0 / max(1.0 - d, 1e-7); }\n"
             // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture. With dyn, a
@@ -228,7 +232,7 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             // depth is continuous (a slope), and within 1 % of one of the nine where it is not (an edge: the range of Link
             // and the land behind him would take in any distance between them)
             "kernel void mfx_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],\n"
-            "                   depth2d<float, access::read> pd [[texture(2)]], texture2d<float, access::read> om [[texture(3)]],\n"
+            "                   depth2d<float, access::read> pd [[texture(2)]], texture2d<float, access::read> om [[texture(3)]], texture2d<float, access::read> lm [[texture(4)]],\n"
             "                   constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
             "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
             "  float2 uv = (float2(g) + 0.5) * p.inv_size;\n"
@@ -256,6 +260,9 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             "      }\n"
             "    }\n"
             "  }\n"
+            // a surface drawn over the G-buffer's depth (water over its bed): its own motion, whatever the depth under it does
+            "  if (p.late > 0.5 && g.x < lm.get_width() && g.y < lm.get_height()) { float2 o = lm.read(g).xy;\n"
+            "    if (o.x < 1.0e8) { float2 prv = float2(o.x * 0.5 + 0.5, 0.5 - 0.5 * p.yflip * o.y); m = (prv - uv) * p.size; } }\n"
             "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
             "  mv.write(float4(m, 0.0, 0.0), g);\n"
             "}\n";
@@ -264,7 +271,7 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"mfx_mv"] : nil;
         g.mv_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
         if (!g.mv_ps) MDIE("motion vector kernel: %s", e.localizedDescription.UTF8String);
-        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 4;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
         for (int i = 0; i < MFX_OUT; i++) {
             g.mv_args[i] = [g.dev newArgumentTableWithDescriptor:ad error:&e]; if (!g.mv_args[i]) MDIE("argument table: %s", e.localizedDescription.UTF8String);
             g.mv_par[i] = [g.dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; [g.rs addAllocation:g.mv_par[i]];
@@ -331,7 +338,8 @@ int mfx_frame_prepare(double frame_s) {
     par[16] = (float)depth.width; par[17] = (float)depth.height; par[18] = 1.0f / depth.width; par[19] = 1.0f / depth.height; par[20] = (float)g.yflip;
     par[21] = atomic_load(&g_mv_dyn) && g.pdepth_frame && g.pdepth_frame == g.frames - 1 ? 1.0f : 0.0f;   // the previous game frame's depth is there
     par[22] = g.objmv && g.objmv.width == depth.width && g.objmv.height == depth.height ? 1.0f : 0.0f;   // object motion for this depth
-    { static int ev = -1; if (ev < 0) { const char *e = getenv("DM_MV_EVERY"); ev = e ? atoi(e) : 0; } par[23] = ev ? 1.0f : 0.0f; }   // object motion wherever written, not only where the camera fails
+    { static int ev = -1; if (ev < 0) { const char *e = getenv("DM_MV_EVERY"); ev = e ? atoi(e) : 0; } par[23] = ev ? 1.0f : 0.0f; }
+    par[24] = g_late_ab && g.latemv && g.latemv_frame == g.frames && g.latemv.width == depth.width && g.latemv.height == depth.height ? 1.0f : 0.0f;   // late surface motion for this frame   // object motion wherever written, not only where the camera fails
     g.enc_depth = depth;
     return s;
 }
@@ -342,6 +350,7 @@ NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int s, id<MTL4CounterHeap> h
     [g.mv_args[s] setTexture:depth.gpuResourceID atIndex:0]; [g.mv_args[s] setTexture:g.mv.gpuResourceID atIndex:1]; [g.mv_args[s] setAddress:g.mv_par[s].gpuAddress atIndex:0];
     [g.mv_args[s] setTexture:g.pdepth.gpuResourceID atIndex:2];
     [g.mv_args[s] setTexture:(g.objmv ? g.objmv : g.mv).gpuResourceID atIndex:3];   // object motion (unused when par[22] is 0)
+    [g.mv_args[s] setTexture:(g.latemv ? g.latemv : g.mv).gpuResourceID atIndex:4];   // late surface motion (unused when par[24] is 0)
     id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch | MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];   // the game's frame is done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.mv_args[s]];
@@ -411,6 +420,7 @@ void mfx_gt_true(id<MTLTexture> t, long frame, const char *dir) { static id<MTLC
 void mfx_gt_dump(long frame, const char *dir) {   // DM_MFX_GT: the generated frame for game frame - 1, as RGBA8 (the caller waited for the GPU)
     static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue];
     if (g.last_slot >= 0 && g.out[g.last_slot]) dump_tex(q, g.out[g.last_slot], 4, dir, "gen", (uint64_t)frame - 1);
+    if (getenv("DM_MV_LATE_DUMP") && g.latemv) dump_tex(q, g.latemv, 8, dir, "late", (uint64_t)frame - 1);   // test: the late surface motion layer
 }
 int mfx_dump_due(void) {   // called after each encode; 1 = dump this frame (the caller first waits for the GPU)
     static int init; if (!init) { init = 1; g_dump_dir = getenv("DM_MFX_DUMP"); }
