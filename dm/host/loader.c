@@ -274,6 +274,12 @@ void dm_fps_state_apply(void) {
         if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.1f%s; keeping the game's size", rs, hi, hi > 1.0f ? "" : " (above 1.0 needs a build whose stubs grow its render buffer pool, and room under what this platform can reserve)"); sc = 1.0f; }
         else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", name, sc);
     }
+    // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
+    // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to the profile's render_scale_max). Independent of the frame step: written at target 0 too.
+    // Above 1.0 the game renders its 3D views larger than it sized its own render target pools for, which the host cannot size from outside, so a game stops when a scene
+    // needs more than its pool holds. How far it goes is per game and only measurement finds it (DM_NVN_POOLPEAK), so the ceiling is the profile's, not a number here
+    const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f; const float hi = DM_GAME_RENDER_SCALE_MAX;
+    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.2f (the game profile's render_scale_max); keeping the game's size", rs, hi); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     if (m->render_pool && sc > 1.0f) {
         // The game's render buffer pool grows by the factor's square, rounded up (+0x4c); the application pool and the alias region (where its virtual range lives) grow by what the
