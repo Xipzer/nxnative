@@ -54,6 +54,8 @@ id<MTLTexture> mfx_output(int slot) { (void)slot; return nil; }
 void mfx_stats(char *out, size_t n) { snprintf(out, n, "not available on visionOS"); }
 void mfx_mv_log(void) {}
 int mfx_dump_due(void) { return 0; }
+void mfx_gt_dump(long frame, const char *dir) { (void)frame; (void)dir; }
+void mfx_gt_true(id<MTLTexture> t, long frame, const char *dir) { (void)t; (void)frame; (void)dir; }
 void mfx_dump(long frame, id<MTLTexture> prev, id<MTLTexture> cur) { (void)frame; (void)prev; (void)cur; }
 #else
 
@@ -245,8 +247,8 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             // where the camera cannot explain the pixel (it moved on its own), the object motion a G-buffer draw wrote (nvn_mtl.m mv_*):
             // the camera is exact for the still world, so object motion is taken only for what moved itself. Taken everywhere, it
             // gave distant instanced scenery whose instances changed order between frames the motion of another instance
-            "      if (!still) {\n"
-            "        m = 0.0;\n"
+            "      if (!still || p.pad2 > 0.5) {\n"
+            "        if (!still) m = 0.0;\n"
             "        if (p.pad1 > 0.5 && g.x < om.get_width() && g.y < om.get_height()) {\n"
             "          float2 o = om.read(g).xy;\n"
             "          if (o.x < 1.0e8) { float2 prv = float2(o.x * 0.5 + 0.5, 0.5 - 0.5 * p.yflip * o.y); m = (prv - uv) * p.size; }\n"
@@ -329,6 +331,7 @@ int mfx_frame_prepare(double frame_s) {
     par[16] = (float)depth.width; par[17] = (float)depth.height; par[18] = 1.0f / depth.width; par[19] = 1.0f / depth.height; par[20] = (float)g.yflip;
     par[21] = atomic_load(&g_mv_dyn) && g.pdepth_frame && g.pdepth_frame == g.frames - 1 ? 1.0f : 0.0f;   // the previous game frame's depth is there
     par[22] = g.objmv && g.objmv.width == depth.width && g.objmv.height == depth.height ? 1.0f : 0.0f;   // object motion for this depth
+    { static int ev = -1; if (ev < 0) { const char *e = getenv("DM_MV_EVERY"); ev = e ? atoi(e) : 0; } par[23] = ev ? 1.0f : 0.0f; }   // object motion wherever written, not only where the camera fails
     g.enc_depth = depth;
     return s;
 }
@@ -404,6 +407,11 @@ static void dump_tex(id<MTLCommandQueue> q, id<MTLTexture> t, NSUInteger bpp, co
     FILE *f = fopen(path, "wb"); if (f) { fwrite(b.contents, 1, w * h * bpp, f); fclose(f); } else MLOG("[RED] dump: cannot write %s", path);
 }
 static const char *g_dump_dir; static uint64_t g_turning; static double g_dump_step;
+void mfx_gt_true(id<MTLTexture> t, long frame, const char *dir) { static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue]; dump_tex(q, t, 4, dir, "true", (uint64_t)frame); }
+void mfx_gt_dump(long frame, const char *dir) {   // DM_MFX_GT: the generated frame for game frame - 1, as RGBA8 (the caller waited for the GPU)
+    static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue];
+    if (g.last_slot >= 0 && g.out[g.last_slot]) dump_tex(q, g.out[g.last_slot], 4, dir, "gen", (uint64_t)frame - 1);
+}
 int mfx_dump_due(void) {   // called after each encode; 1 = dump this frame (the caller first waits for the GPU)
     static int init; if (!init) { init = 1; g_dump_dir = getenv("DM_MFX_DUMP"); }
     if (!g_dump_dir || !g.last_depth || !g.mv || g.last_slot < 0) return 0;
