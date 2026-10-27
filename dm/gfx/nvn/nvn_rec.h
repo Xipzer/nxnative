@@ -84,6 +84,12 @@ static inline int rec_on(void) {
 #else
     g_rec = e && atoi(e) > 0;
 #endif
+    // Frame interpolation (DM_MFX_INTERP, nvn_mfx.m) encodes at the present on the submit thread and does not run with
+    // the encode thread: with both on, it skipped every frame and logged it once. A player who picked frame generation
+    // asked for it, so it wins, unless DM_NVN_ENC_THREAD was set explicitly. Costs about 4 ms of submit thread per frame
+    // on an iPhone 17 Pro Max, inside the 16.7 ms of a 60 fps game frame.
+    { const char *mi = getenv("DM_MFX_INTERP");
+      if (g_rec && !e && mi && *mi && strcmp(mi, "0")) { g_rec = 0; MLOG("Metal encoding stays on the submit thread: frame generation (DM_MFX_INTERP=%s) needs it", mi); } }
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
     return g_rec;
 }
