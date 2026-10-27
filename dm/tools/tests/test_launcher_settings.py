@@ -62,6 +62,27 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
 
+    def test_defaults_follow_each_platform_host(self):
+        # nvn_mtl.m pso4_on: Mac defaults on, iOS follows the profile. nvn_rec.h rec_on: iOS on, Mac off.
+        for gid, ios_pso in ((BOTW, '1'), (WONDER, '0')):
+            with self.subTest(game=gid):
+                ios, mac = build(gid, 'nvn', 'ios'), build(gid, 'nvn', 'mac')
+                self.assertEqual((ios['DM_PSO_MTL4']['default'], ios['DM_NVN_ENC_THREAD']['default']), (ios_pso, '1'))
+                self.assertEqual((mac['DM_PSO_MTL4']['default'], mac['DM_NVN_ENC_THREAD']['default']), ('1', '0'))
+
+    def test_unknown_platform_is_rejected(self):
+        with self.assertRaisesRegex(SystemExit, 'SETTINGS_PLATFORM must be ios or mac'):
+            build(WONDER, 'nvn', 'mca')
+
+    def test_malformed_platform_defaults_are_rejected(self):
+        for default in ('1|', '|0', '1|0|1'):
+            with self.subTest(default=default), tempfile.TemporaryDirectory() as tmp:
+                row = '\t'.join(('DM_X', 'toggle', '-', default, 'always', 'Game', 'X')) + '\n'
+                (Path(tmp) / 'settings.tsv').write_text(row, encoding='utf-8')
+                with patch.object(settings, 'HERE', Path(tmp)), patch.object(settings.nacp, 'languages', return_value=['en-US']), \
+                        self.assertRaisesRegex(SystemExit, 'platform default'):
+                    settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')
+
     def test_table_format_is_strict(self):
         good = 'DM_X\ttoggle\t-\t0\talways\tGame\tX\n'
         for bad, why in [('DM_X\ttoggle\t-\t0\talways\tX\n', 'columns'), ('DM_X\ttoggle\t-\t0\talways\tsecret\tX\n', 'section'),

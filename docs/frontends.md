@@ -21,7 +21,7 @@ With `--progress json` it asks nothing and writes one JSON object per line on st
 | `stage_end` | `k`, `name`, `ok`, `summary`, `elapsed` | a stage ends |
 | `say` | `msg` | a message; one starting with `[RED] ` is an error |
 
-The exit code is 0 for a finished build, 1 for a build that stopped on an error (its last `say` says why, starting with `[RED] `; an unexpected error also prints its traceback on stderr), and 130 when interrupted. Each tool's full output goes to `<NSP folder>/<title ID>_build/logs/`, not to stdout. The build folder `<title ID>_build/` keeps what the next build can reuse, so a second build after a change takes a fraction of the first.
+The exit code is 0 for a finished build, 1 for a build that stopped on an error (its last `say` says why, starting with `[RED] `; an unexpected error also prints its traceback on stderr), 2 for invalid command-line arguments, and 130 when interrupted. Argument parsing happens before JSON mode starts: an argument error writes its usage and error to stderr and emits no JSON events. A front end must check the process's exit status and capture stderr as well as the JSON stream. Each tool's full output goes to `<NSP folder>/<title ID>_build/logs/`, not to stdout. The build folder `<title ID>_build/` keeps what the next build can reuse, so a second build after a change takes a fraction of the first.
 
 ## The settings list
 
@@ -38,7 +38,7 @@ A built app carries the settings its game supports, as the iPhone app's settings
 
 - `env`: the environment switch the setting sets. `kind`: `choice` (one of `options`, each `[value, label]`), `range` (a number from `min` to `max` in `step`s) or `toggle` (`on` or `off`, the values the switch takes).
 - `section`: `Game`, `Controls` or `Performance`, the headings of the settings screen, in that order; the rows come in the order to show them.
-- `default`: the value the game was tested with ([Tested defaults](settings.md#tested-defaults)). A front end that keeps only the choices that differ from it lets a newer build's tested defaults reach the player, as the iPhone app does.
+- `default`: the value for this app's platform ([Tested defaults](settings.md#tested-defaults)), with profile defaults resolved for its game. A front end that keeps only the choices that differ from it lets a newer build's tested defaults reach the player, as the iPhone app does.
 - An app without the file has no settings to offer: start it as it is.
 
 ## Starting a game

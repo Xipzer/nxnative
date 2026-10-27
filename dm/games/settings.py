@@ -28,6 +28,8 @@ def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
 
 
 def build(gid, patched, control):
+    platform = os.environ.get('SETTINGS_PLATFORM') or 'ios'
+    if platform not in ('ios', 'mac'): sys.exit(f'SETTINGS_PLATFORM must be ios or mac: {platform}')
     g = game.load(gid)
     macros = dict(re.findall(r'^#define (DM_GAME_\w+) (.*)$', game.header(g), re.M))   # the host's own defaults, as it is compiled for this game
     keys = fixups_keys(Path(patched) / 'main.fixups.tsv')
@@ -42,12 +44,16 @@ def build(gid, patched, control):
         if cond == 'languages>1': return len(langs) > 1
         if cond.startswith('fixups:'): return cond[7:] in keys
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
-        if cond.startswith('platform:'): return (os.environ.get('SETTINGS_PLATFORM') or 'ios') == cond[9:]
+        if cond.startswith('platform:'): return platform == cond[9:]
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
         if m: return (macro(m[1], n) == m[3]) == (m[2] == '==')
         sys.exit(f'settings.tsv:{n}: unknown condition {cond}')
 
     def value(d, n):
+        if '|' in d:
+            parts = d.split('|')
+            if len(parts) != 2 or not all(parts): sys.exit(f'settings.tsv:{n}: platform default is <ios>|<mac>: {d}')
+            d = parts[0] if platform == 'ios' else parts[1]
         if d.startswith('DM_GAME_'): return macro(d, n)
         if d.startswith('build:'):
             v = os.environ.get(d[6:], '')

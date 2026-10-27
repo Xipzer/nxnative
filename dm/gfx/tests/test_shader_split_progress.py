@@ -16,15 +16,17 @@ class PooledProgressTests(unittest.TestCase):
     def test_a_slow_first_job_does_not_hold_the_count(self):
         release = threading.Event()
         def scan(job):   # job 0 is a large archive range: it finishes only after the others
-            if job == 0: release.wait(5)
+            if job == 0 and not release.wait(10): raise TimeoutError('progress did not report the other 19 jobs')
             return job
-        lines = io.StringIO()
+        class Output(io.StringIO):
+            def write(self, text):
+                n = super().write(text)
+                if text == 'progress: 19/20': release.set()
+                return n
+        lines = Output()
         with mock.patch.object(split, 'scan_file', scan), cf.ThreadPoolExecutor(4) as ex, contextlib.redirect_stdout(lines):
-            def watch():   # the count reaches 19 of 20 while job 0 still runs, then job 0 is let go
-                while 'progress: 19/20' not in lines.getvalue(): threading.Event().wait(0.05)
-                release.set()
-            threading.Thread(target=watch, daemon=True).start()
-            results = split.pooled(ex, list(range(20)), 20)
+            try: results = split.pooled(ex, list(range(20)), 20)
+            finally: release.set()   # unblock the worker before the executor joins it if the scan fails
         self.assertEqual(results, list(range(20)))   # the job order, as pool.map gave it
         counts = [l for l in lines.getvalue().split('\n') if l.startswith('progress: ')]
         self.assertIn('progress: 19/20', counts)
