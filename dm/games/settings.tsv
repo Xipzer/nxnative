@@ -21,7 +21,7 @@ DM_PRESENT_UPSCALE_OUT	range	1.0:4.0:0.1	1.0	always	Picture	Upscaling detail	Onl
 DM_SHARPEN	range	0:1:0.05	0	always	Picture	Sharpening
 DM_ANISO	choice	0=Off,2=2x,4=4x,8=8x,16=16x	0	gfxapi:nvn	Picture	Anisotropic filtering	Uses a little more GPU time.
 DM_TRILINEAR	toggle	-	0	gfxapi:nvn	Picture	Trilinear filtering
-DM_MFX_INTERP	choice	0=Off,interp=60 shown as 120,interp30=30 shown as 60	0	DM_GAME_ID==01007EF00011E000	Picture	Frame generation	MetalFX makes a picture between each pair of game frames. 60 shown as 120 needs a 120 Hz screen and Frame rate at 60. Half a frame more latency, more GPU time.
+DM_MFX_INTERP	choice	0=Off,2x=2x	0	DM_GAME_ID==01007EF00011E000	Picture	Frame generation	MetalFX makes a frame between each pair the game renders, doubling the Frame rate above: 30 becomes 60, 60 becomes 120 on a 120 Hz screen. Adds about half a frame of latency and GPU time per frame.
 DM_TOUCH_HAPTICS	toggle	-	1	always	Controls	Touch feedback
 DM_RUMBLE	toggle	-	1	always	Controls	Game rumble
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		DM_RUMBLE=1

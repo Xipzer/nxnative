@@ -126,10 +126,12 @@ const char *mfx_mode_name(int m) {
 static void mfx_init(void) {
     const char *e = getenv("DM_MFX_INTERP"); int v;
     if (!e || !*e || !strcmp(e, "0")) v = MFX_OFF;
+    else if (!strcmp(e, "2x")) {   // doubles the frame rate the player picked: 30 shown as 60, 60 shown as 120 (needs a 100 Hz or faster screen)
+        const char *ft = getenv("DM_FPS_TARGET"); v = ft && atoi(ft) == 30 ? MFX_30 : MFX_HALF; }
     else if (!strcmp(e, "interp30")) v = MFX_30;
     else if (!strcmp(e, "interp")) v = MFX_HALF;
     else if (!strcmp(e, "interpmax")) v = MFX_MAX;
-    else MDIE("DM_MFX_INTERP must be interp30, interp, interpmax or 0, got %s", e);
+    else MDIE("DM_MFX_INTERP must be 2x, interp30, interp, interpmax or 0, got %s", e);
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("DM_MFX_INTERP=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }

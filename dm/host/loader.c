@@ -260,7 +260,7 @@ void dm_fps_state_apply(void) {
     // Frame generation decides the game's own rate: 30+30 interpolates a game at 30 fps, 60 shown as 120 one at 60. With the
     // launcher's Frame rate left at 60 and 30+30 chosen, the game ran at 60 and the interpolator, pacing for 30, fought it
     { const char *mi = getenv("DM_MFX_INTERP");
-      int want = mi && !strcmp(mi, "interp30") ? 30 : mi && !strcmp(mi, "interp") ? 60 : 0;
+      int want = mi && !strcmp(mi, "interp30") ? 30 : mi && !strcmp(mi, "interp") ? 60 : 0;   // 2x keeps the player's Frame rate and doubles it
       if (want && t != want) { LOG("%s: frame rate %d for frame generation (DM_MFX_INTERP=%s), in place of %d", name, want, mi, t); t = want; } }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     dm_fps_var_cap = t > 60 ? t : 0;

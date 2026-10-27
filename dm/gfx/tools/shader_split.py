@@ -803,7 +803,7 @@ def gfpak_members(d, label):
     """Game Freak's GFPAK archive (Pokémon Sword: 7,699 '.gfpak' files under bin/archive, 7.9 GB): 'GFLXPACK', u32 version 0x1000, u32 0, u32 file count, u32 folder count,
     u64 offset of the file table, u64 offset of the file hashes (FNV-1a 64 of each path; no names are stored), u64 offset of the folder table pointers. The file table holds
     0x18 bytes per file {u16 level, u16 compression, u32 length, u32 stored length, u32 0, u64 data offset}: compression 0 stored, 1 zlib, 2 LZ4 (one block), 3 Oodle Kraken (pkNX).
-    Every entry of the game's is LZ4. Inside: BNTX textures, BNSH shader archives (the models' and effects'), the models and animations. → (#index, data) of each entry"""
+    Every entry of Sword's is LZ4; Pokémon Legends: Arceus also has Oodle Kraken entries. Inside: BNTX textures, BNSH shader archives (the models' and effects'), the models and animations. → (#index, data) of each entry"""
     if d[8:12] != b'\0\x10\0\0': red(f'{label}: GFPAK version {d[8:12].hex()}, not 0x1000')
     n, _, files = struct.unpack_from('<IIQ', d, 0x10)
     for i in range(n):
@@ -814,7 +814,8 @@ def gfpak_members(d, label):
             data = lz4.block.decompress(raw, uncompressed_size=usz)
         elif ct == 1: data = __import__('zlib').decompress(raw)
         elif ct == 0: data = raw
-        else: red(f'{label}: entry {i} has compression {ct} (Oodle), which this reader does not decode')
+        elif ct == 3: data = oodle(raw, usz)   # Oodle Kraken (Pokémon Legends: Arceus), through the game's own decoder in the Mac host (profile_guess.py oodle_packs)
+        else: red(f'{label}: entry {i} has compression {ct}, which this reader does not decode')
         if len(data) != usz: red(f'{label}#{i}: {len(data):#x} bytes, the entry says {usz:#x}')
         yield f'#{i}', data
 
