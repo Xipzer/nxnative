@@ -4959,15 +4959,16 @@ static void mfx_pso_attach7(MTLRenderPipelineDescriptor *d, const pso_key *k) {
    Objects are matched across frames by vertex shader, stream 0, index buffer, count and their occurrence among such draws.
    Variants are made in the background from the shaders' MSL (g_msl_dir on the Mac, DM_MFX_MSL_DIR or Documents/mfx_msl on iOS);
    a draw whose pair is not made yet draws as before, leaving the attachment's "no data" value, so nothing waits. */
+static int taau_on(void); static float g_taau_j[2], g_taau_lod;   // temporal upscaling (below): its jitter this frame, in pixels
 #define MV_PREV_ABI 12          // [[buffer(12)]]: free in every translated shader (0: arguments, 13: geometry capture, 14-30: vertex streams)
 #define MV_NODATA 1.0e9f        // attachment 6's clear value: no object motion here, the camera's is used
 static int mv_on(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("DM_MV"); v = e ? atoi(e) != 0 : 1;
                  if (v && mfx_on()) MLOG("[mv] object motion vectors on (DM_MV=0 turns them off): G-buffer draws also write their previous position"); }
-    return v && mfx_on();
+    return v && (mfx_on() || taau_on());
 }
-static struct { id<MTLTexture> depth, tex; uint64_t frame; int pass_on, draw; uint64_t key; uint64_t n_draw, n_mv, n_prev; } g_mv;
+static struct { id<MTLTexture> depth, tex; uint64_t frame; int pass_on, draw, obj; uint64_t key; uint64_t n_draw, n_mv, n_prev; } g_mv;
 static _Atomic int g_mv_ok, g_mv_bad;
 /* The per-object store: two frames of uniform bytes, swapped at each new frame. An entry holds the bytes of every uniform block
    the draw's vertex shader reads, in binding order */
@@ -4981,6 +4982,7 @@ static void mv_new_frame(uint64_t f) {
     if (f / 300 != g_mv.frame / 300 && g_mv.n_draw) { MLOG("[mv] up to frame %llu: G-buffer draws %llu, with object motion %llu (%.0f%%), of those with a previous frame %llu; pairs made %d, not %d",
         (unsigned long long)f, g_mv.n_draw, g_mv.n_mv, 100.0 * g_mv.n_mv / g_mv.n_draw, g_mv.n_prev, g_mv_ok, g_mv_bad); g_mv.n_draw = g_mv.n_mv = g_mv.n_prev = 0; }
     g_mv.frame = f; g_mvc ^= 1; mv_frame *c = &g_mvf[g_mvc];
+    { void taau_new_frame(void); taau_new_frame(); }
     if (!c->e) { c->e = calloc(MV_SLOTS, sizeof *c->e); c->pool = malloc(MV_POOL); }
     memset(c->e, 0, MV_SLOTS * sizeof *c->e); c->used = 0; c->n = 0;
 }
@@ -5050,10 +5052,57 @@ static NSString *mv_vs_source(NSString *src) {
     NSString *head = [src substringToIndex:sig.location];
     head = [head stringByReplacingOccurrencesOfString:@"struct main0_out\n{\n" withString:@"struct main0_out\n{\n    float4 dm_mv_cur [[user(dm_mv_cur)]];\n    float4 dm_mv_prev [[user(dm_mv_prev)]];\n"];
     return [NSString stringWithFormat:@"%@static inline main0_out dm_mv_body(%@)\n{%@}\n\n"
-            "vertex main0_out main0(%@, constant spvDescriptorSetBuffer0& dm_mv_prev [[buffer(%d)]])\n{\n"
+            "vertex main0_out main0(%@, constant spvDescriptorSetBuffer0& dm_mv_prev [[buffer(%d)]], constant float4& dm_jit [[buffer(11)]])\n{\n"
             "    main0_out o = dm_mv_body(%@);\n    main0_out p = dm_mv_body(%@);\n"
-            "    o.dm_mv_cur = o.gl_Position; o.dm_mv_prev = p.gl_Position;\n    return o;\n}\n",
+            // dm_jit: xy the temporal upscale's jitter in normalized device coordinates (0 without it); z 1 = write the object motion
+            "    o.dm_mv_cur = o.gl_Position; o.dm_mv_prev = dm_jit.z > 0.5 ? p.gl_Position : float4(2.0e9, 2.0e9, 0.0, 2.0);\n"
+            "    o.gl_Position.xy += dm_jit.xy * o.gl_Position.w;\n    return o;\n}\n",
             head, [plain componentsJoinedByString:@", "], [src substringWithRange:body], params, MV_PREV_ABI, call, callp];
+}
+/* Temporal upscaling's texture LOD bias: a G-buffer fragment variant samples its 2D textures with bias(dm_lod), where the host puts
+   log2(render width / output width) (0 without temporal upscaling). Texture detail is then chosen for the output's resolution, as the
+   history accumulates it; without it, textures stay as blurred as the render resolution makes them. Only texture2d samples that give
+   no level, bias or gradient of their own are changed. Returns the source unchanged when nothing applies */
+static NSString *mv_fs_bias(NSString *src) {
+    // names of the shader's texture2d<float> resources (argument buffer members and parameters)
+    NSRegularExpression *decl = [NSRegularExpression regularExpressionWithPattern:@"texture2d<float(?:, access::sample)?>\\s+(\\w+)" options:0 error:nil];
+    NSMutableSet *t2d = [NSMutableSet set];
+    for (NSTextCheckingResult *m in [decl matchesInString:src options:0 range:NSMakeRange(0, src.length)]) [t2d addObject:[src substringWithRange:[m rangeAtIndex:1]]];
+    if (!t2d.count) return src;
+    NSMutableString *s = [src mutableCopy]; int changed = 0;
+    NSRange r = NSMakeRange(0, s.length);
+    while (1) {
+        NSRange f = [s rangeOfString:@".sample(" options:0 range:r]; if (f.location == NSNotFound) break;
+        NSUInteger nb = f.location; while (nb > 0) { unichar c = [s characterAtIndex:nb - 1]; if (!(isalnum(c) || c == '_')) break; nb--; }
+        NSString *name = [s substringWithRange:NSMakeRange(nb, f.location - nb)];
+        NSRange args = mv_match(s, NSMaxRange(f) - 1, '(', ')');
+        r = NSMakeRange(NSMaxRange(f), s.length - NSMaxRange(f));
+        if (args.location == NSNotFound || ![t2d containsObject:name]) continue;
+        NSString *a = [s substringWithRange:args];
+        if ([a containsString:@"level("] || [a containsString:@"bias("] || [a containsString:@"gradient2d("] || [a containsString:@"min_lod_clamp("]) continue;
+        // split at top-level commas
+        NSMutableArray *parts = [NSMutableArray array]; int depth = 0; NSUInteger st = 0;
+        for (NSUInteger i = 0; i < a.length; i++) { unichar c = [a characterAtIndex:i];
+            if (c == '(' || c == '[') depth++; else if (c == ')' || c == ']') depth--; else if (c == ',' && !depth) { [parts addObject:[a substringWithRange:NSMakeRange(st, i - st)]]; st = i + 1; } }
+        [parts addObject:[a substringFromIndex:st]];
+        if (parts.count == 2) [parts addObject:@" bias(dm_lod)"];
+        else if (parts.count == 3 && [[parts[2] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] hasPrefix:@"int2("]) [parts insertObject:@" bias(dm_lod)" atIndex:2];
+        else continue;
+        NSString *na = [parts componentsJoinedByString:@","];
+        [s replaceCharactersInRange:args withString:na]; changed++;
+        r = NSMakeRange(args.location + na.length, s.length - args.location - na.length);
+    }
+    if (!changed) return src;
+    // dm_lod: from the float4 at buffer(11), bound for the fragment stage too (mv_bind_prev); declared at the top of main0
+    NSRange sig = [s rangeOfString:@"fragment main0_out main0("]; NSRange pr = mv_match(s, NSMaxRange(sig) - 1, '(', ')');
+    [s replaceCharactersInRange:NSMakeRange(NSMaxRange(pr), 0) withString:@", constant float4& dm_fs_jit [[buffer(11)]]"];
+    pr.length += [@", constant float4& dm_fs_jit [[buffer(11)]]" length];
+    NSUInteger bo = [s rangeOfString:@"{" options:0 range:NSMakeRange(NSMaxRange(pr), s.length - NSMaxRange(pr))].location;
+    [s replaceCharactersInRange:NSMakeRange(bo + 1, 0) withString:@"\n    const float dm_lod = dm_fs_jit.w;"];
+    // the file's other entry points (integer outputs) share the samples: a program-scope 0 for them, which main0's local shadows
+    NSRange inc = [s rangeOfString:@"using namespace metal;\n"];
+    if (inc.location != NSNotFound) [s replaceCharactersInRange:NSMakeRange(NSMaxRange(inc), 0) withString:@"constant float dm_lod = 0.0;\n"];
+    return s;
 }
 /* The fragment variant: also writes the previous position (normalized device coordinates) to colour attachment 6 */
 static NSString *mv_fs_source(NSString *src) {
@@ -5116,7 +5165,9 @@ static id<MTLFunction> mv_pair(NvShader *vs, NvShader *fs) {
             MTLCompileOptions *o = [MTLCompileOptions new]; o.preserveInvariance = YES; NSError *e = nil;
             id<MTLLibrary> vl = [g_dev newLibraryWithSource:v2 options:o error:&e]; vf = vl ? [vl newFunctionWithName:@"main0"] : nil;
             if (!vf) { static int n; if (n++ < 6) MLOG("[RED] [mv] vertex variant of %s: %s", vk.UTF8String, e.localizedDescription.UTF8String); why = "vertex variant does not compile"; }
-            else { id<MTLLibrary> fl = [g_dev newLibraryWithSource:f2 options:o error:&e]; id<MTLFunction> ff = fl ? [fl newFunctionWithName:@"main0"] : nil;
+            else { NSString *fb = mv_fs_bias(f2); id<MTLLibrary> fl = [g_dev newLibraryWithSource:fb options:o error:&e];
+                   if (!fl && fb != f2) { static int nb; if (nb++ < 4) MLOG("[RED] [mv] LOD-biased variant of %s: %s; unbiased instead", fk.UTF8String, e.localizedDescription.UTF8String); fl = [g_dev newLibraryWithSource:f2 options:o error:&e]; }
+                   id<MTLFunction> ff = fl ? [fl newFunctionWithName:@"main0"] : nil;
                    if (!ff) { static int n; if (n++ < 6) MLOG("[RED] [mv] fragment variant of %s: %s", fk.UTF8String, e.localizedDescription.UTF8String); why = "fragment variant does not compile"; }
                    else result = ff; }
         }
@@ -5155,6 +5206,11 @@ static void mv_bind_prev(id<MTLCommandEncoder> en, NvShader *sh, const uint64_t 
     }
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab); memcpy((uint8_t *)ab.contents + off, ps, arg_len);
     enc_r_args((id<MTLRenderCommandEncoder>)en, MTLRenderStageVertex, g_cur_arena->gpu + off, MV_PREV_ABI);
+    static float jscale = -1; if (jscale < 0) { const char *e = getenv("DM_TAAU_JSCALE"); jscale = e ? (float)atof(e) : 1.0f; }   // diagnostic: a visible jitter tells whether it reaches the scene
+    float jit[4] = {g_mv.depth ? jscale * 2.0f * g_taau_j[0] / g_mv.depth.width : 0, g_mv.depth ? jscale * -2.0f * g_taau_j[1] / g_mv.depth.height : 0, g_mv.obj ? 1.0f : 0.0f, g_taau_lod};
+    off = arena_alloc(sizeof jit, &ab); memcpy((uint8_t *)ab.contents + off, jit, sizeof jit);
+    enc_r_args((id<MTLRenderCommandEncoder>)en, MTLRenderStageVertex, g_cur_arena->gpu + off, 11);
+    enc_r_args((id<MTLRenderCommandEncoder>)en, MTLRenderStageFragment, g_cur_arena->gpu + off, 11);   // the LOD bias in .w
 }
 /* A G-buffer pass (the depth the interpolator takes, every pass of the frame that renders into it): colour attachment 6 holds the
    previous positions, cleared to "no data" by the first such pass of the frame and loaded by the rest */
@@ -5184,6 +5240,157 @@ static void mv_pass_setup(MTL4RenderPassDescriptor *pd) {
 static void mv_pso_attach6(MTLRenderPipelineDescriptor *d, id<MTLFunction> fsfn) {
     MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[6];
     c.blendingEnabled = NO; c.writeMask = mv_vs_for((__bridge const void *)fsfn) ? MTLColorWriteMaskRed | MTLColorWriteMaskGreen : MTLColorWriteMaskNone;
+}
+static void ubo_read(int stage, int reg, int off, size_t n, void *out);
+/* ---------- Temporal upscaling (DM_TAAU) ----------
+   MetalFX's temporal scaler in place of Breath of the Wild's own scene upscale. The game renders its scene at the render scale and
+   FXAA-scales it into the canvas (MFX_UPSCALE_KEY): a single frame, so detail below a pixel of the scene is lost and edges shimmer.
+   With object motion (mv_*) every G-buffer draw already runs through the host's own variant of its vertex shader, which here also
+   moves the picture by a sub-pixel jitter (Halton 2,3, 8 phases). Just before the game's upscale draw the host resolves the scene,
+   the G-buffer depth and the motion (the object motion where a draw wrote it, else the camera's) into a canvas-sized frame with
+   history, and the upscale draw samples that in place of the scene: the game's FXAA then runs at 1:1. */
+static int taau_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_TAAU"); v = e && atoi(e) ? 1 : 0;
+                 if (v && !(g_q4 && [MTLFXTemporalScalerDescriptor supportsMetal4FX:g_dev])) { MLOG("[RED] [taau] this GPU has no Metal 4 MetalFX temporal scaler: off"); v = 0; }
+                 if (v) MLOG("[taau] temporal upscaling on (DM_TAAU): jittered G-buffer, MetalFX temporal scaler before the game's upscale"); }
+    return v;
+}
+static struct {
+    id<MTL4FXTemporalScaler> sc; id<MTL4Compiler> comp; id<MTLTexture> out, mv; id<MTLComputePipelineState> ps; id<MTL4ArgumentTable> at; id<MTLBuffer> par;
+    float cam[2][84]; uint64_t cam_frame, frames; int ncam, phase, reset, phases; float jx, jy; NSUInteger rw, rh;
+    __unsafe_unretained id<MTLTexture> swap_from; MTLPixelFormat in_pf; NSUInteger in_w, in_h, out_w, out_h; id<MTLTexture> cin, din;
+} g_ta;
+static float halton(int i, int b) { float f = 1, r = 0; for (; i > 0; i /= b) { f /= b; r += f * (i % b); } return r; }
+// At a new frame: the next jitter, in pixels of the render size
+void taau_new_frame(void) {
+    if (!taau_on()) { g_ta.jx = g_ta.jy = 0; return; }
+    // as many phases as the upscale needs to cover each output pixel: 8 x the area ratio (Apple's guidance), 8 to 64
+    int ph = g_ta.phases ? g_ta.phases : 8, i = 1 + (int)(g_ta.frames++ % (uint64_t)ph); g_ta.jx = halton(i, 2) - 0.5f; g_ta.jy = halton(i, 3) - 0.5f; g_taau_j[0] = g_ta.jx; g_taau_j[1] = g_ta.jy;
+}
+static void taau_take_camera(void) {
+    if (!taau_on() || g_ta.cam_frame == g_mv.frame) return;
+    const p_bind_buf *u = &S.ubo[0][0]; if (!u->addr || u->size != 2336) return;
+    memcpy(g_ta.cam[1], g_ta.cam[0], sizeof g_ta.cam[0]); ubo_read(0, 0, 0, sizeof g_ta.cam[0], g_ta.cam[0]);
+    g_ta.cam_frame = g_mv.frame; g_ta.ncam++;
+}
+static int inv4d(const double m[16], double o[16]) {
+    double a[16]; memcpy(a, m, sizeof a); for (int i = 0; i < 16; i++) o[i] = i % 5 ? 0 : 1;
+    for (int c = 0; c < 4; c++) { int p = c; for (int r = c + 1; r < 4; r++) if (fabs(a[r * 4 + c]) > fabs(a[p * 4 + c])) p = r;
+        if (fabs(a[p * 4 + c]) < 1e-12) return 0;
+        for (int k = 0; k < 4; k++) { double t = a[c * 4 + k]; a[c * 4 + k] = a[p * 4 + k]; a[p * 4 + k] = t; t = o[c * 4 + k]; o[c * 4 + k] = o[p * 4 + k]; o[p * 4 + k] = t; }
+        double d = a[c * 4 + c]; for (int k = 0; k < 4; k++) { a[c * 4 + k] /= d; o[c * 4 + k] /= d; }
+        for (int r = 0; r < 4; r++) if (r != c) { double f = a[r * 4 + c]; for (int k = 0; k < 4; k++) { a[r * 4 + k] -= f * a[c * 4 + k]; o[r * 4 + k] -= f * o[c * 4 + k]; } } }
+    return 1;
+}
+/* The scene resolved just before the game's upscale draw (which then samples g_ta.out through the swap in encode_args) */
+static void taau_resolve(void) {
+    if (!g_mv.depth || g_ta.ncam < 2) return;
+    int tid = (int)(tex_slot_h(S.tex[1], S.img[1], 0) & 0xfffff); void *tv = NULL;
+    os_unfair_lock_lock(&g_rmu); if (tid) tex_fast_rid(tid, &tv); os_unfair_lock_unlock(&g_rmu);
+    id<MTLTexture> scene = (__bridge id<MTLTexture>)tv, canvas = R.rt.n > 0 ? tex_mtl(R.rt.color[0]) : nil, depth = g_mv.depth;
+    if (!scene || !canvas || scene.textureType != MTLTextureType2D || scene.width != depth.width || scene.height != depth.height) {
+        static int said; if (said++ < 3) MLOG("[RED] [taau] the upscale draw's scene (%lux%lu) is not the G-buffer's size (%lux%lu): not resolved", (unsigned long)scene.width, (unsigned long)scene.height, (unsigned long)depth.width, (unsigned long)depth.height);
+        return; }
+    NSUInteger ow = canvas.width, oh = canvas.height; NSError *e = nil;
+    NSUInteger cw = scene.width, ch = scene.height;
+    { double r = (double)(ow * oh) / (double)(cw * ch); int ph = (int)ceil(8 * r); g_ta.phases = ph < 8 ? 8 : ph > 64 ? 64 : ph;
+      static float lodk = -100; if (lodk < -99) { const char *e = getenv("DM_TAAU_LOD"); lodk = e ? (float)atof(e) : 1.0f; }   // diagnostic: 0 turns the bias off
+      g_taau_lod = lodk * (float)log2((double)cw / (double)ow); }
+    if (!g_ta.sc || g_ta.in_w < cw || g_ta.in_h < ch || g_ta.in_pf != scene.pixelFormat || g_ta.out_w != ow || g_ta.out_h != oh) {
+        NSUInteger mw = MAX(cw, g_ta.sc ? g_ta.in_w : 0), mh = MAX(ch, g_ta.sc ? g_ta.in_h : 0);
+        if (!g_ta.comp) g_ta.comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
+        MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
+        d.colorTextureFormat = scene.pixelFormat; d.depthTextureFormat = MTLPixelFormatDepth32Float; d.motionTextureFormat = MTLPixelFormatRG16Float;
+        d.outputTextureFormat = MTLPixelFormatRGBA16Float; d.inputWidth = mw; d.inputHeight = mh; d.outputWidth = ow; d.outputHeight = oh;
+        d.autoExposureEnabled = YES;
+        g_ta.sc = g_ta.comp ? [d newTemporalScalerWithDevice:g_dev compiler:g_ta.comp] : nil;
+        if (!g_ta.sc) { static int said; if (said++ < 3) MLOG("[RED] [taau] no temporal scaler for %lux%lu format %lu -> %lux%lu", (unsigned long)scene.width, (unsigned long)scene.height, (unsigned long)scene.pixelFormat, (unsigned long)ow, (unsigned long)oh); return; }
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:ow height:oh mipmapped:NO];
+        td.storageMode = MTLStorageModePrivate; td.usage = g_ta.sc.outputTextureUsage | MTLTextureUsageShaderRead;
+        if (g_ta.out) res_remove(g_ta.out); g_ta.out = [g_dev newTextureWithDescriptor:td]; g_ta.out.label = @"temporal upscale output"; res_add(g_ta.out);
+        td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float width:mw height:mh mipmapped:NO];
+        td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+        if (g_ta.mv) res_remove(g_ta.mv); g_ta.mv = [g_dev newTextureWithDescriptor:td]; g_ta.mv.label = @"temporal upscale motion"; res_add(g_ta.mv);
+        td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:scene.pixelFormat width:mw height:mh mipmapped:NO]; td.storageMode = MTLStorageModePrivate; td.usage = g_ta.sc.colorTextureUsage | MTLTextureUsageShaderRead;
+        if (g_ta.cin) res_remove(g_ta.cin); g_ta.cin = [g_dev newTextureWithDescriptor:td]; res_add(g_ta.cin);
+        td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:mw height:mh mipmapped:NO]; td.storageMode = MTLStorageModePrivate; td.usage = g_ta.sc.depthTextureUsage | MTLTextureUsageShaderRead;
+        if (g_ta.din) res_remove(g_ta.din); g_ta.din = [g_dev newTextureWithDescriptor:td]; res_add(g_ta.din); res_commit();
+        g_ta.in_w = mw; g_ta.in_h = mh; g_ta.in_pf = scene.pixelFormat; g_ta.out_w = ow; g_ta.out_h = oh; g_ta.reset = 1;
+        MLOG("[taau] MetalFX temporal scaler up to %lux%lu (format %lu) -> %lux%lu", (unsigned long)mw, (unsigned long)mh, (unsigned long)scene.pixelFormat, (unsigned long)ow, (unsigned long)oh);
+    }
+    if (!g_ta.ps) {
+        static const char *src =
+            "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct P { float4x4 reproj; float2 size; float2 inv_size; float2 jit; float2 pad; };\n"
+            // motion in pixels to the previous position, without the jitter: the object motion a G-buffer draw wrote (its previous
+            // position, normalized device coordinates; 1e9 = none), else the camera's reprojection of the depth
+            "kernel void taau_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::read> om [[texture(1)]],\n"
+            "                    texture2d<float, access::write> mv [[texture(2)]], constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+            "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
+            // u0: where this sample's surface is without the jitter (the picture was moved by +jitter); both the object motion (an
+            // unjittered previous position) and the camera's reprojection are taken from there
+            "  float2 uv = (float2(g) + 0.5) * p.inv_size, u0 = uv - p.jit * p.inv_size, prv = u0;\n"
+            "  float2 o = om.read(g).xy;\n"
+            "  if (o.x < 1.0e8) prv = float2(o.x * 0.5 + 0.5, 0.5 - 0.5 * o.y);\n"
+            "  else { float4 c = p.reproj * float4(u0.x * 2.0 - 1.0, 1.0 - u0.y * 2.0, d.read(g) * 2.0 - 1.0, 1.0);\n"
+            "         if (c.w > 1e-7) { float2 n = c.xy / c.w; prv = float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * n.y); } }\n"
+            "  float2 m = (prv - u0) * p.size;\n"
+            "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
+            "  mv.write(float4(m, 0.0, 0.0), g);\n"
+            "}\n";
+        MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:o error:&e];
+        g_ta.ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"taau_mv"] error:&e] : nil;
+        if (!g_ta.ps) MDIE("[taau] motion kernel: %s", e.localizedDescription.UTF8String);
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 3;
+        g_ta.at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        g_ta.par = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; res_add(g_ta.par); res_commit();
+    }
+    // reproj: the previous frame's view-projection times the inverse of this one's (camera block floats 12-27, row-major)
+    double vc[16], vp[16], ic[16], m[16];
+    for (int i = 0; i < 16; i++) { vc[i] = g_ta.cam[0][12 + i]; vp[i] = g_ta.cam[1][12 + i]; }
+    if (!inv4d(vc, ic)) return;
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) { double s = 0; for (int k = 0; k < 4; k++) s += vp[r * 4 + k] * ic[k * 4 + c]; m[r * 4 + c] = s; }
+    // the rendered sample of pixel p is at p + jitter: the unjittered position is p - jitter, so the motion gains +jitter
+    static float jsign = 0; if (!jsign) { const char *js = getenv("DM_TAAU_JSIGN"); jsign = js ? (float)atof(js) : 1.0f; }
+    // g_ta.jx / jy were this frame's jitter when its G-buffer was drawn (taau_new_frame runs at the frame's first G-buffer draw)
+    float *par = g_ta.par.contents;
+    for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) par[c * 4 + r] = (float)m[r * 4 + c];
+    par[16] = (float)depth.width; par[17] = (float)depth.height; par[18] = 1.0f / depth.width; par[19] = 1.0f / depth.height; par[20] = jsign * g_ta.jx; par[21] = jsign * g_ta.jy;
+    if (g_enc) rp_end();
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    id<MTL4CommandBuffer> cb = (id<MTL4CommandBuffer>)g_cb;
+    id<MTL4ComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit | MTLStageDispatch visibilityOptions:resource_vis()];   // the scene and the G-buffer are done
+    [ce copyFromTexture:scene sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:g_ta.cin destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [ce copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:g_ta.din destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [g_ta.at setTexture:depth.gpuResourceID atIndex:0]; [g_ta.at setTexture:(g_mv.tex ? g_mv.tex : depth).gpuResourceID atIndex:1];
+    [g_ta.at setTexture:g_ta.mv.gpuResourceID atIndex:2]; [g_ta.at setAddress:g_ta.par.gpuAddress atIndex:0];
+    [ce setComputePipelineState:g_ta.ps]; [ce setArgumentTable:g_ta.at];
+    [ce dispatchThreads:MTLSizeMake(depth.width, depth.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    // DM_TAAU_MVLOG=1 (diagnostic): the motion of the previous resolve, read back one frame late: median and share of the object path
+    static id<MTLBuffer> rb; static NSUInteger rbw, rbh; static int mvlog = -1; if (mvlog < 0) mvlog = getenv("DM_TAAU_MVLOG") != NULL;
+    if (mvlog && rb) { const uint16_t *h = rb.contents; float xs[2048]; int n = 0; double ax = 0, ay = 0;
+        for (NSUInteger y = rbh / 8; y < rbh && n < 2048; y += rbh / 8) for (NSUInteger x = rbw / 16; x < rbw && n < 2048; x += rbw / 16) {
+            __fp16 a, b; memcpy(&a, h + 2 * (y * rbw + x), 2); memcpy(&b, h + 2 * (y * rbw + x) + 1, 2); xs[n++] = fabsf((float)a) + fabsf((float)b); ax += a; ay += b; }
+        float mx = 0; for (int i = 0; i < n; i++) mx = fmaxf(mx, xs[i]);
+        static uint64_t k; if (k++ % 60 == 0) MLOG("[taau] motion: mean %.3f %.3f px, max |x|+|y| %.3f over %d samples (jitter now %.3f %.3f)", ax / n, ay / n, mx, n, g_ta.jx, g_ta.jy); }
+    if (mvlog) { if (!rb || rbw != depth.width || rbh != depth.height) { rbw = depth.width; rbh = depth.height; rb = [g_dev newBufferWithLength:rbw * rbh * 4 options:MTLResourceStorageModeShared]; res_add(rb); res_commit(); }
+        [ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageBlit visibilityOptions:resource_vis()];
+        [ce copyFromTexture:g_ta.mv sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(rbw, rbh, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:rbw * 4 destinationBytesPerImage:rbw * rbh * 4]; }
+    [ce barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
+    [ce endEncoding];
+    g_ta.sc.colorTexture = g_ta.cin; g_ta.sc.depthTexture = g_ta.din; g_ta.sc.motionTexture = g_ta.mv; g_ta.sc.outputTexture = g_ta.out;
+    g_ta.sc.inputContentWidth = cw; g_ta.sc.inputContentHeight = ch;
+    static float joff = 0; if (!joff) { const char *e = getenv("DM_TAAU_JOFF"); joff = e ? (float)atof(e) : 1.0f; }   // measured: +1 holds a still picture still (frame-to-frame change 1.14 against 5.78 with -1)   // the scaler's jitter sign, apart from the motion's
+    g_ta.sc.jitterOffsetX = joff * g_ta.jx; g_ta.sc.jitterOffsetY = joff * g_ta.jy;
+    g_ta.sc.motionVectorScaleX = 1; g_ta.sc.motionVectorScaleY = 1; g_ta.sc.depthReversed = getenv("DM_TAAU_DREV") && atoi(getenv("DM_TAAU_DREV")); g_ta.sc.reset = g_ta.reset; g_ta.reset = 0;
+    [g_ta.sc encodeToCommandBuffer:cb];
+    ce = [cb computeCommandEncoder];   // the upscale draw's pass after the scaler
+    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [ce endEncoding];
+    g_ta.swap_from = scene; g_args_dirty[1] = 1;
+    static uint64_t n; if (++n <= 2 || n % 600 == 0) MLOG("[taau] resolved %llu frames (jitter %.3f %.3f px)", (unsigned long long)n, g_ta.jx, g_ta.jy);
 }
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
@@ -6611,6 +6818,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             int tid = b->kind == NVN_RB_TEXU ? ubo_tex_id(ubo_handle(nvn_stage, reg, b->off)) : (int)(tex_slot_h(S.tex[nvn_stage], S.img[nvn_stage], reg) & 0xfffff);
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (t && g_fb_n && g_fb_seq == g_draw_seq && nvn_stage == 1) for (int q = 0; q < g_fb_n; q++) if (t == g_fb_src[q]) { t = g_fb_use[q]; trid = g_fb_rid[q]; break; }   // same-pass feedback sampling: read the snapshot instead (see fb_prepare)
+            if (t && g_ta.swap_from && t == g_ta.swap_from && nvn_stage == 1) { t = g_ta.out; trid = t.gpuResourceID._impl; g_ta.swap_from = nil; }   // temporal upscaling: the resolved scene
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
             if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu swz=%d%d%d%d mtl=%p", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
@@ -9006,6 +9214,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_enc && g_pass.layered != g_rp_layered) rp_end();   // a layered pass only for layer-writing vertex shaders (see rp_begin_ex)
     if (g_enc && g_sm_pass && draw_samples_rt(pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }
     if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && !g_geo_program && sm_on()) sm_plan(pr);
+    if (taau_on() && pr && pr->sh[1] && !strncmp(pr->sh[1]->key, MFX_UPSCALE_KEY, 16) && R.rt.n > 0 && R.rt.color[0] && !g_defer_replaying) taau_resolve();   // temporal upscaling: the scene resolved first
     if (mfx_on() && pr && R.rt.n > 0 && R.rt.color[0] && !g_defer_replaying) {   // frame interpolation (g_mfx)
         if (pr->sh[1] && !strncmp(pr->sh[1]->key, MFX_UPSCALE_KEY, 16)) {   // the upscale draw into the canvas: after it the canvas holds the finished scene
             if (R.rt.color[0]->serial == g_mfx.canvas) { g_mfx.ready = 1; g_mfx.canvas_tex = tex_mtl(R.rt.color[0]); }
@@ -9023,7 +9232,9 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     }
     if (g_mfx.want_cam) mfx_take_camera();
     if (g_mv.pass_on && pr && pr->sh[0] && pr->sh[1]) {   // object motion: this draw's key; its pipeline again when its motion pair has been made
-        mv_draw_key(pr, dw, di);
+        mv_draw_key(pr, dw, di); taau_take_camera();
+        static int inst_obj = -1; if (inst_obj < 0) { const char *e = getenv("DM_TAAU_INSTOBJ"); inst_obj = e ? atoi(e) : 1; }
+        g_mv.obj = !taau_on() || inst_obj || (dw ? dw->instances : di->instances) <= 1;   // instanced draws may change instance order between frames: the camera's motion there
         int ready = mv_pair(pr->sh[0], pr->sh[1]) != nil; if (ready != g_mv.draw) g_pso_dirty = 1;
         g_mv.n_draw++; g_mv.n_mv += ready;
     } else if (g_mv.draw) { g_mv.draw = 0; g_pso_dirty = 1; }

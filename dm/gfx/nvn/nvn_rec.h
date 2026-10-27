@@ -90,7 +90,8 @@ static inline int rec_on(void) {
     // on an iPhone 17 Pro Max, inside the 16.7 ms of a 60 fps game frame.
     // The launcher always sets DM_NVN_ENC_THREAD (every row is applied), so "set explicitly" means set by an env file
     // (DM_ENV_FILE_KEYS, main.m): only that keeps the encode thread on against frame generation
-    { const char *mi = getenv("DM_MFX_INTERP"), *fk = getenv("DM_ENV_FILE_KEYS");
+    { const char *mi = getenv("DM_MFX_INTERP"), *fk = getenv("DM_ENV_FILE_KEYS"), *ta = getenv("DM_TAAU");
+      if (ta && atoi(ta) && !(mi && *mi && strcmp(mi, "0"))) mi = "taau";   // temporal upscaling encodes on the submit thread too
       int pinned = fk && strstr(fk, "DM_NVN_ENC_THREAD") != NULL;
       if (g_rec && !pinned && mi && *mi && strcmp(mi, "0")) { g_rec = 0; MLOG("Metal encoding stays on the submit thread: frame generation (DM_MFX_INTERP=%s) needs it", mi); } }
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
