@@ -27,6 +27,8 @@ fps_target	60
 # takes a null back (SIGSEGV at main+0xed7128, address 0x20, while the field loads). Measured on an iPad Pro 13" M4 with
 # DM_NVN_POOLPEAK (docked, open world with the inventory and map opened): 112.8 MB of the 115 MB used at 1.40, which plays;
 # 1.45 crashes. 1.35 is the last step of the slider below that, so the ceiling is set there rather than at the edge
+# With PR #76's RENDER_POOL stub the pool is no longer the limit: the loader takes the platform's reservation ceiling instead.
+# This value only applies to a build without that stub (the measured ceiling for the 115 MB pool as the game makes it)
 render_scale_max	1.35
 # Tested defaults for this game (iPhone 17 Pro Max, iOS 27.0.1, docked, 60 fps target; GitHub issues #142 / #159): present snapshots keep the GPU from idling between frames,
 # which iOS's clock governor reads as headroom (30 fps without them, a steady 60 for 300 s with them and the encode thread); render pipelines through MTL4Compiler give the

@@ -267,19 +267,19 @@ void dm_fps_state_apply(void) {
     // entitlement (hle_svc.c, read on a real device: 6 GB succeeds, 7 GB fails). A game whose own reservation leaves
     // room under that cap can therefore render above its own size on iOS too: Breath of the Wild reserves 4 GB, so
     // every factor up to 3.0 fits (5.92 GB at 3.0, 5.25 GB at 2.4). A game that already reserves 5 GB gets less.
-    const float hi = m->render_pool ? render_pool_max(m->render_pool) : 1.0f;
+    // Two different ceilings, and which one applies depends on the build:
+    //   the build's stubs grow the render buffer pool (RENDER_POOL): the limit is what this platform can reserve,
+    //     since the growth comes on top of the guest's address space (render_pool_max above);
+    //   they do not: the pool stays the size the game made it, so the limit is how far the game's own pool
+    //     stretches, which is the profile's render_scale_max, found with DM_NVN_POOLPEAK.
+    const float hi = m->render_pool ? render_pool_max(m->render_pool) : (float)DM_GAME_RENDER_SCALE_MAX;
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
     if (rs) {
         char *end; sc = strtof(rs, &end);
-        if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.1f%s; keeping the game's size", rs, hi, hi > 1.0f ? "" : " (above 1.0 needs a build whose stubs grow its render buffer pool, and room under what this platform can reserve)"); sc = 1.0f; }
+        if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.2f%s; keeping the game's size", rs, hi,
+            hi > 1.0f ? "" : " (above 1.0 needs either a build whose stubs grow its render buffer pool, or a profile render_scale_max)"); sc = 1.0f; }
         else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", name, sc);
     }
-    // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
-    // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to the profile's render_scale_max). Independent of the frame step: written at target 0 too.
-    // Above 1.0 the game renders its 3D views larger than it sized its own render target pools for, which the host cannot size from outside, so a game stops when a scene
-    // needs more than its pool holds. How far it goes is per game and only measurement finds it (DM_NVN_POOLPEAK), so the ceiling is the profile's, not a number here
-    const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f; const float hi = DM_GAME_RENDER_SCALE_MAX;
-    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.2f (the game profile's render_scale_max); keeping the game's size", rs, hi); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     if (m->render_pool && sc > 1.0f) {
         // The game's render buffer pool grows by the factor's square, rounded up (+0x4c); the application pool and the alias region (where its virtual range lives) grow by what the
