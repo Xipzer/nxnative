@@ -65,6 +65,9 @@ def build(gid, patched, control):
         elif kind == 'range':
             # A bound may be DM_GAME_<NAME>, so a slider stops where the game stops (DM_RENDER_SCALE at the profile's render_scale_max)
             lo, hi, st = (float((macro(x, n) if x.startswith('DM_GAME_') else x).rstrip('f')) for x in values.split(':'))
+            # A build whose stubs grow the render buffer pool is no longer held by the pool the game made, so the
+            # slider goes to the host's own ceiling and the loader refuses what this platform cannot reserve
+            if var == 'DM_RENDER_SCALE' and 'RENDER_POOL' in keys: hi = 3.0
             if hi <= lo: continue   # nothing to choose: the game's own value is the only one
             s.update(min=lo, max=hi, step=st)
         elif kind == 'toggle':
