@@ -10203,6 +10203,43 @@ static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
 // DM_PRESENT_UPSCALE_OUT=1.0..4.0: the share of the viewport the scaler reconstructs at, before the present averages it
 // back down (the box filter in the present shader). 1.0, the default, reconstructs at the viewport and draws 1:1 as before;
 // above that, reconstructing large and sampling down is supersampling, which costs GPU time and nothing else. Read once
+// DM_QUALITY_AUTO=1: hold the frame rate by giving up picture rather than frames. A device that renders every frame
+// inside its budget cold stops doing so once its GPU clock falls, and without this the frame rate is what gives.
+//   step 1  the upscaler reconstructs at the viewport (DM_PRESENT_UPSCALE_OUT back to 1.0)
+//   step 2  render scale no higher than 1.0
+//   step 3  render scale no higher than 0.85
+// Never above what the player chose. Frame time is the only input: on an iPhone 17 Pro Max a third of frames were
+// dropped for ten minutes while NSProcessInfo's thermal state read nominal throughout, and one scene's GPU time went
+// 8.40 ms cold to 21.83 ms warm, still nominal. A step back up that is followed by a fall within ten seconds doubles
+// the quiet it needs next time (3 windows of 60 presents, up to 16), so the picture settles instead of hunting.
+extern uint8_t *dm_fps_state;   // loader.c: +0 float target fps, +0x10 float render scale
+static int g_q_step;
+static int q_auto(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_QUALITY_AUTO"); v = e && atoi(e) ? 1 : 0;
+                 if (v) MLOG("DM_QUALITY_AUTO=1: quality steps down to hold the frame rate and back up when frames fit"); }
+    return v;
+}
+static void q_tick(void) {
+    if (!q_auto() || !dm_fps_state) return;
+    float target; memcpy(&target, dm_fps_state, sizeof target);
+    if (target <= 0) return;   // the game paces itself: no budget to miss
+    static uint64_t last_ns, up_ns; static int late, seen, clean, need = 3; static float player = -1;
+    uint64_t now = now_ns(), dt = last_ns ? now - last_ns : 0; last_ns = now;
+    if (!dt) return;
+    if ((double)dt > 1.25e9 / target) late++;
+    if (++seen < 60) return;
+    int was = g_q_step;
+    if (late >= 20) { if (g_q_step < 3) g_q_step++; if (up_ns && now - up_ns < 10000000000ull && need < 16) need *= 2; clean = 0; }
+    else if (!late) { if (++clean >= need && g_q_step > 0) { g_q_step--; up_ns = now; clean = 0; } }
+    else clean = 0;
+    if (g_q_step != was) MLOG("quality step %d → %d (%d of %d presents late, %d quiet windows needed)", was, g_q_step, late, seen, need);
+    late = seen = 0;
+    float cur; memcpy(&cur, dm_fps_state + 0x10, sizeof cur);
+    if (player < 0) player = cur;
+    float cap = g_q_step >= 3 ? 0.85f : g_q_step >= 2 ? 1.0f : 99.0f, use = player < cap ? player : cap;
+    if (use != cur) memcpy(dm_fps_state + 0x10, &use, sizeof use);
+}
 static float fx_out(void) {
     static float v = -1;
     if (v < 0) { const char *e = getenv("DM_PRESENT_UPSCALE_OUT"); v = e ? strtof(e, NULL) : 1.0f;
@@ -10230,7 +10267,7 @@ static int fx_wanted(MTLViewport vp, NSUInteger cw, NSUInteger ch) {
 static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTexture> raw, const NSUInteger r[4], MTLViewport vp, MTLPixelFormat out_pf, int remake_wait) {
     NSUInteger cw = r[2], ch = r[3], ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
     if (fx_mode() != 1 || !fx_wanted(vp, cw, ch)) return nil;
-    { float k = fx_out();   // reconstruct above the viewport where asked: the present pass averages it back down
+    { float k = g_q_step >= 1 ? 1.0f : fx_out();   // reconstruct above the viewport where asked (not while DM_QUALITY_AUTO has stepped down): the present pass averages it back down
       if (k > 1.0f) { ow = (NSUInteger)(vp.width * k + 0.5); oh = (NSUInteger)(vp.height * k + 0.5);
                       if (ow > 16384 || oh > 16384) { ow = (NSUInteger)vp.width; oh = (NSUInteger)vp.height; } } }   // Metal's 2D texture limit
     if (!fx->sc || fx->in.width != cw || fx->in.height != ch || fx->in.pixelFormat != raw.pixelFormat || fx->out.width != ow || fx->out.height != oh || fx->out.pixelFormat != out_pf) {
@@ -10354,6 +10391,7 @@ static double g_link_it_tin;   // Enqueue time of the frame the display-link cal
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, int interp) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
+    q_tick();   // DM_QUALITY_AUTO
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
         MLOG("[bootprof] t=%.3f s present #%llu: metallibs loaded %llu / %.1f ms; pipelines created %llu / %.1f ms (all synchronous on the submit thread); prewarmed and used: shaders %llu / render pipelines %llu / compute pipelines %llu; "
