@@ -4902,6 +4902,7 @@ static id<MTLFunction> fs_fn_mfx(NvShader *fs, int role) {
         const char *dir = getenv("DM_MFX_MSL_DIR");
         static char docs[1024];
         if (!dir && getenv("HOME")) { snprintf(docs, sizeof docs, "%s/Documents/mfx_msl", getenv("HOME")); if (!access(docs, R_OK)) dir = docs; }
+        if (!dir && g_msl_dir) dir = g_msl_dir.UTF8String;   // the Mac reads the build's shader cache directly
         NSString *path = dir ? [NSString stringWithFormat:@"%s/%s%s.metal", dir, key, [keyS hasSuffix:@"_b"] ? "" : "_b"] : nil;   // the shader's key names its library: <key>.metal beside <key>.metallib
         NSString *src = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
         if (!src) MLOG("[RED] [mfx] fragment shader %s: no MSL source (%s); its draws stay out of the UI layer", key, dir ? path.UTF8String : "DM_MFX_MSL_DIR is not set");
@@ -4976,12 +4977,14 @@ static _Atomic int g_mv_ok, g_mv_bad;
 #define MV_POOL (24u << 20)
 typedef struct { uint64_t key; uint32_t off, len; uint16_t nreg; uint16_t reg[8]; uint32_t rlen[8]; } mv_ent;
 typedef struct { mv_ent *e; uint8_t *pool; uint32_t used; int n; } mv_frame;
-static mv_frame g_mvf[2]; static int g_mvc;   // g_mvf[g_mvc] is being filled, the other is last frame's
+static mv_frame g_mvf[3]; static int g_mvc;   // g_mvf[g_mvc] is being filled; (g_mvc + 3 - span) % 3 is the frame the motion points to
+static int mfx_gt_on(void) { static int v = -1; if (v < 0) v = getenv("DM_MFX_GT") != NULL; return v; }
+static int mfx_gt_span(void);   // DM_MFX_GT: 2 (the interpolation spans two game frames, the middle one is the truth), else 1
 static void mv_new_frame(uint64_t f) {
     if (f == g_mv.frame) return;
     if (f / 300 != g_mv.frame / 300 && g_mv.n_draw) { MLOG("[mv] up to frame %llu: G-buffer draws %llu, with object motion %llu (%.0f%%), of those with a previous frame %llu; pairs made %d, not %d",
         (unsigned long long)f, g_mv.n_draw, g_mv.n_mv, 100.0 * g_mv.n_mv / g_mv.n_draw, g_mv.n_prev, g_mv_ok, g_mv_bad); g_mv.n_draw = g_mv.n_mv = g_mv.n_prev = 0; }
-    g_mv.frame = f; g_mvc ^= 1; mv_frame *c = &g_mvf[g_mvc];
+    g_mv.frame = f; g_mvc = (g_mvc + 1) % 3; mv_frame *c = &g_mvf[g_mvc];
     { void taau_new_frame(void); taau_new_frame(); }
     if (!c->e) { c->e = calloc(MV_SLOTS, sizeof *c->e); c->pool = malloc(MV_POOL); }
     memset(c->e, 0, MV_SLOTS * sizeof *c->e); c->used = 0; c->n = 0;
@@ -5185,7 +5188,7 @@ static id<MTLFunction> mv_pair(NvShader *vs, NvShader *fs) {
 /* At a G-buffer draw's vertex arguments: keep this draw's uniform bytes for the next frame and bind the previous frame's, as the
    argument buffer the vertex variant reads at MV_PREV_ABI (this frame's where the object has no previous entry: no motion) */
 static void mv_bind_prev(id<MTLCommandEncoder> en, NvShader *sh, const uint64_t *slots, NSUInteger arg_len) {
-    mv_frame *cur = &g_mvf[g_mvc], *prv = &g_mvf[g_mvc ^ 1];
+    mv_frame *cur = &g_mvf[g_mvc], *prv = &g_mvf[(g_mvc + 3 - mfx_gt_span()) % 3];
     mv_ent *ce = mv_find(cur, g_mv.key, 1), *pe = mv_find(prv, g_mv.key, 0);
     uint64_t ps[NVN_REFL_MAXARG]; memcpy(ps, slots, arg_len < sizeof ps ? arg_len : sizeof ps);
     if (ce) { ce->off = cur->used; ce->nreg = 0; }
@@ -9234,7 +9237,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_mv.pass_on && pr && pr->sh[0] && pr->sh[1]) {   // object motion: this draw's key; its pipeline again when its motion pair has been made
         mv_draw_key(pr, dw, di); taau_take_camera();
         static int inst_obj = -1; if (inst_obj < 0) { const char *e = getenv("DM_TAAU_INSTOBJ"); inst_obj = e ? atoi(e) : 1; }
-        g_mv.obj = !taau_on() || inst_obj || (dw ? dw->instances : di->instances) <= 1;   // instanced draws may change instance order between frames: the camera's motion there
+        { static int ev = -1; if (ev < 0) { const char *e = getenv("DM_MV_EVERY"); ev = e ? atoi(e) : 0; }
+          g_mv.obj = ev ? (dw ? dw->instances : di->instances) <= 1 : !taau_on() || inst_obj || (dw ? dw->instances : di->instances) <= 1; }   // instanced draws may change instance order between frames: the camera's motion there
         int ready = mv_pair(pr->sh[0], pr->sh[1]) != nil; if (ready != g_mv.draw) g_pso_dirty = 1;
         g_mv.n_draw++; g_mv.n_mv += ready;
     } else if (g_mv.draw) { g_mv.draw = 0; g_pso_dirty = 1; }
@@ -11079,6 +11083,30 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
     if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }
     uint64_t first = g_pq_read + 1, ticket = g_pq_in;
+    /* Frame interpolation paced by content time (DM_MFX_PACE, on by default with interpolation). Each picture has the time it shows: a game
+       frame its enqueue time, a generated one the midpoint between its two game frames. Every refresh shows the newest picture whose time
+       is at least a latency L old, L following the measured frame interval. At a steady rate that is one picture per half interval; when the
+       game slows, the pictures stay evenly spaced in content time instead of a generated one going up a refresh early and its game frame
+       staying up long, which made characters jump, and nothing is held to a lower rate. */
+    static int vpace = -1; if (vpace < 0) { const char *e = getenv("DM_MFX_PACE"); vpace = !(e && !strcmp(e, "0")); }
+    static double prev_tin, iv_ema; int vp_interp = -2;
+    if (vpace && mfx_on() && !mfx_gt_on()) {
+        double T = update.targetPresentationTimestamp;
+        for (uint64_t j = first; j <= g_pq_in; j++) { double ti = g_pq[(j - 1) % PQ].t_in, pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
+            if (pr > 0 && ti - pr > 0.004 && ti - pr < 0.1) iv_ema = iv_ema > 0 ? 0.9 * iv_ema + 0.1 * (ti - pr) : ti - pr; }
+        // L: a generated picture's time is half an interval before its second game frame is ready, so it must be at least half an interval old,
+        // plus the GPU's few ms. Simulated at 33-60 fps on 120 Hz ticks: the spread of display minus content time reaches the tick's own
+        // (2.4 ms; the in-order pacing was 2.6-4.3 ms) at 18-25 ms of latency, against 18-20 ms in order
+        double L = 0.5 * (iv_ema > 0 ? iv_ema : 0.0167) + 0.006; if (L < 0.010) L = 0.010; if (L > 0.05) L = 0.05;
+        uint64_t pick = 0; int pick_i = -1;
+        for (uint64_t j = first; j <= g_pq_in; j++) {
+            pq_item *q = &g_pq[(j - 1) % PQ]; double pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
+            if (q->interp >= 0 && !q->interp_shown && pr > 0 && (pr + q->t_in) / 2 + L <= T) { pick = j; pick_i = q->interp; }
+            if (q->t_in + L <= T) { pick = j; pick_i = -1; }
+        }
+        if (!pick) { pthread_mutex_unlock(&g_pq_mu); return; }   // nothing old enough: the picture on screen stays
+        ticket = pick; vp_interp = pick_i;
+    }
     // In order, one frame per tick and at most one behind the newest: two waiting, the older now and the newer on the next tick; three or more, the older ones are dropped. Taking the newest
     // dropped the one before whenever two frames landed in the same refresh, as frames of a 60 fps game that take 16-17.5 ms do, and the next frame then stayed up 33 ms
     // (Dark Souls Remastered, from PR #31: presents within 14.7-18.7 ms 98.2 -> 99.98 %, about 2 ms more from enqueue to display). DM_PRESENT_FIFO=0 takes the newest, as before
@@ -11087,9 +11115,10 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     // A frame whose interpolated picture is up is never dropped (its own picture next, whatever is queued behind it), and while the queue catches up (three or more
     // waiting) no interpolated picture is shown: taking the newer frames' interpolated pictures instead dropped nearly every game frame once the queue stayed that deep
     pq_item *fp = &g_pq[(first - 1) % PQ]; int behind = 0;
-    if (fp->interp >= 0 && fp->interp_shown) ticket = first;
+    if (vp_interp != -2) {}
+    else if (fp->interp >= 0 && fp->interp_shown) ticket = first;
     else if (fifo && ticket > first) { behind = ticket - first >= 2; ticket = behind ? g_pq_in - 1 : first; }
-    pq_item *ip = &g_pq[(ticket - 1) % PQ]; int interp = !behind && ip->interp >= 0 && !ip->interp_shown ? ip->interp : -1;
+    pq_item *ip = &g_pq[(ticket - 1) % PQ]; int interp = vp_interp != -2 ? vp_interp : !behind && ip->interp >= 0 && !ip->interp_shown ? ip->interp : -1;
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = update.targetPresentationTimestamp; }
     pq_item it = *ip; g_link_it_tin = it.t_in;
     g_pq_read = interp >= 0 ? ticket - 1 : ticket;
@@ -11102,6 +11131,16 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp, interp); }
     double shown = it.interp >= 0 && it.interp_shown ? it.period / 2 : it.period;   // frame interpolation: each of the two pictures for half the frame's period (30+30: one 60 Hz tick each); a frame shown without its interpolated one keeps its whole period
     g_link_hold_until = submitted && shown > (it.interp >= 0 && it.interp_shown ? 0.0125 : 0.025) ? update.targetPresentationTimestamp + shown : 0;   // without interpolation as before: only intervals of 2 or more
+    if (vp_interp != -2) g_link_hold_until = 0;   // paced by content time: no hold
+    if (submitted && mfx_on() && !mfx_gt_on()) {   // the shown picture's content time, for the next pick and for the steadiness line (both pacings)
+        double ct = interp >= 0 ? (prev_tin + it.t_in) / 2 : it.t_in; if (interp < 0) prev_tin = it.t_in;
+        static double s1, s2, last_ct, sd1, sd2; static int n; double e = update.targetPresentationTimestamp - ct;
+        if (last_ct > 0 && ct > last_ct) { double d = ct - last_ct; sd1 += d; sd2 += d * d; } last_ct = ct;
+        s1 += e; s2 += e * e;
+        if (++n == 600) { double m = s1 / n, sd = sqrt(fmax(s2 / n - m * m, 0)), dm = sd1 / n, dsd = sqrt(fmax(sd2 / n - dm * dm, 0));
+            MLOG("[mfx] pacing: %d pictures, display minus content time %.1f ms +- %.2f ms, content step %.2f ms +- %.2f ms, frame interval %.1f ms", n, m * 1e3, sd * 1e3, dm * 1e3, dsd * 1e3, iv_ema * 1e3);
+            s1 = s2 = sd1 = sd2 = 0; n = 0; }
+    }
     if (!submitted && interp < 0) {
         pthread_mutex_lock(&g_pq_mu);
         if (ticket > g_pq_done) g_pq_done = ticket;
@@ -11367,8 +11406,31 @@ static uint64_t snap_take(const tex_t *t) {
    the UI layer is cleared. Resets the per-frame state. Returns the output slot of the interpolated frame, or -1. Not with the encode thread (rec_on): its blocks
    order the queue, and this buffer would go ahead of the frame */
 static id<MTL4CommandAllocator> g_mfx_alloc[3]; static id<MTL4CommandBuffer> g_mfx_cb[3]; static _Atomic int g_mfx_busy[3];
+/* DM_MFX_GT=<dir> (test): every second game frame is interpolated from the frames two apart, so the game frame in between, presented as
+   usual, is the truth for the generated one. Every 60th frame the generated one is saved (mfx_gt_dump); the true one is DM_NVN_SHOT's.
+   Generated frames are not shown */
+static int mfx_gt_span(void) { return mfx_gt_on() ? 2 : 1; }
 static int mfx_present_frame(const tex_t *t, double period) { @autoreleasepool {
     mfx_note_swap(t);
+    static uint64_t gt_n; static id<MTLTexture> gt_tex;   // presents counted here, so the truth and the generated frame name the same frame
+    if (mfx_gt_on() && (++gt_n & 1)) {   // the true middle frame: shown, not interpolated; every 60th copied for the comparison
+        id<MTLTexture> src = t ? present_raw_src(tex_mtl(t)) : nil; int b = -1; for (int i = 0; i < 3 && b < 0; i++) if (!atomic_load(&g_mfx_busy[i])) b = i;
+        if (src && b >= 0 && gt_n % 60 == 59) {
+            if (!gt_tex || gt_tex.width != src.width || gt_tex.height != src.height || gt_tex.pixelFormat != src.pixelFormat) {
+                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
+                td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageShaderRead; gt_tex = [g_dev newTextureWithDescriptor:td]; res_add(gt_tex); res_commit(); }
+            if (!g_mfx_alloc[b]) { g_mfx_alloc[b] = [g_dev newCommandAllocator]; g_mfx_cb[b] = [g_dev newCommandBuffer]; }
+            id<MTL4CommandBuffer> cb = g_mfx_cb[b]; [g_mfx_alloc[b] reset]; [cb beginCommandBufferWithAllocator:g_mfx_alloc[b]];
+            id<MTL4ComputeCommandEncoder> ce = [cb computeCommandEncoder];
+            [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];
+            [ce copyFromTexture:src toTexture:gt_tex]; [ce endEncoding]; [cb endCommandBuffer];
+            atomic_store(&g_mfx_busy[b], 1); MTL4CommitOptions *o = [MTL4CommitOptions new]; _Atomic int *busy = &g_mfx_busy[b];
+            [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; atomic_store(busy, 0); }];
+            pthread_mutex_lock(&g_res_mu); [g_q4 commit:&cb count:1 options:o]; pthread_mutex_unlock(&g_res_mu);
+            while (atomic_load(busy)) usleep(200);
+            mfx_gt_true(gt_tex, (long)gt_n, getenv("DM_MFX_GT"));
+        }
+        g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = g_mfx.ready = 0; g_mfx.canvas_tex = nil; return -1; }
     int a = -1; for (int i = 0; i < 3 && a < 0; i++) if (!atomic_load(&g_mfx_busy[i])) a = i;
     if (rec_on()) { static int said; if (!said++) MLOG("[RED] [mfx] frame interpolation does not run with the encode thread (DM_NVN_ENC_THREAD=0 turns it off)"); a = -1; }
     id<MTL4CommandBuffer> cb = nil;
@@ -11413,6 +11475,7 @@ static int mfx_present_frame(const tex_t *t, double period) { @autoreleasepool {
             atomic_store(busy, 0); }];
         pthread_mutex_lock(&g_res_mu); [g_q4 commit:&cb count:1 options:o]; pthread_mutex_unlock(&g_res_mu);
         mfx_mv_log();   // DM_MFX_MVLOG (diagnostic)
+        if (keep && mfx_gt_on() && gt_n % 60 == 0) { while (atomic_load(&g_mfx_busy[a])) usleep(200); mfx_gt_dump((long)gt_n, getenv("DM_MFX_GT")); }
         if (keep && mfx_dump_due()) { while (atomic_load(&g_mfx_busy[a])) usleep(200); mfx_dump((long)atomic_load(&g_cur_frame), nil, nil); }   // DM_MFX_DUMP (diagnostic): waits for the GPU
     }
     g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = g_mfx.ready = 0; g_mfx.canvas_tex = nil;
@@ -11433,6 +11496,7 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
     }
     if (ws_on()) { static uint64_t f0; uint64_t f = atomic_load(&g_cur_frame); if (!f0) f0 = f; else if (f >= f0 + 300) { ws_report(f, f - f0); f0 = f; } }
     int islot = t && !ev_val && mfx_on() ? mfx_present_frame(t, period) : -1;   // frame interpolation: the frame shown before this one
+    if (mfx_gt_on()) islot = -1;   // DM_MFX_GT: generated frames are compared, not shown
     tex_t snap; uint64_t ss = 0; int slot = 0;
     if (t && !ev_val && mtl_snap_on()) {
         slot = (int)(atomic_load(&g_snap_next) % (uint64_t)g_snap_n);

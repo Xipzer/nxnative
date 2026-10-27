@@ -1689,13 +1689,6 @@ static int fstep_hold(void) {
     static int h = -1;
     if (h < 0) {
         const char *e = getenv("DM_FPS_HOLD"); h = e ? strcmp(e, "off") != 0 : DM_GAME_FPS_HOLD;
-        // Frame generation needs an even cadence. MetalFX makes the frame halfway between two game frames and the present shows
-        // each for half the period, so a game frame that takes 1.5 periods leaves the generated one at the wrong moment: the
-        // camera's motion is reprojected and hides it, but characters (whose pixels get no motion vectors) visibly jump. Held,
-        // a late game drops to an even 30 and frame generation shows an even 60, then 120 again once frames fit. The launcher
-        // sets every row, so only an env file's DM_FPS_HOLD keeps frames unheld under frame generation
-        { const char *mi = getenv("DM_MFX_INTERP"), *fk = getenv("DM_ENV_FILE_KEYS");
-          if (!h && mi && *mi && strcmp(mi, "0") && !(fk && strstr(fk, "DM_FPS_HOLD"))) { h = 1; LOG("[nvn] frame step: frames are held when late, so frame generation keeps an even cadence (DM_MFX_INTERP=%s)", mi); } }
         if (!h) LOG("[nvn] frame step: frames are not held longer than the cap's vsyncs (%s)", e ? "DM_FPS_HOLD" : "game profile fps_hold");
     }
     return h;
