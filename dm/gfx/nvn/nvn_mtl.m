@@ -10661,7 +10661,10 @@ static void link_sync(void) {   // Called every frame by the game's present thre
     if (want && mtl_fps_target() == 30 && !mfx_on()) want = 3;   // Power-saving mode: display link at 30 Hz (not with frame interpolation: 30+30 shows two pictures per game frame)
     // Interpolation at half the screen rate shows two pictures per game frame, so the link runs at the screen's full rate:
     // a 60 fps game on a 120 Hz screen is shown at 120. At the default mode 1 the link stayed at 60 and every other picture had nowhere to go
-    else if (want && mfx_on() && mfx_enabled() == MFX_HALF && front_screen_max_fps() >= 120) want = 2;   // mfx_on() is 0 or 1, mfx_enabled() the mode
+    else if (want && mfx_on() && mfx_enabled() == MFX_HALF && front_screen_max_fps() >= 100) {   // mfx_on() is 0 or 1, mfx_enabled() the mode
+        static int said; if (!said++) MLOG("[mfx] display link at the screen's full rate (%d Hz) for interpolation at half of it", front_screen_max_fps());
+        want = 2; }
+    else if (want && mfx_on() && mfx_enabled() == MFX_HALF) { static int said; if (!said++) MLOG("[RED] [mfx] the screen reports %d Hz: interpolation at half the rate needs 100 Hz or more", front_screen_max_fps()); }
     else if (want && nvn_var_fps()) want = 4;   // a variable frame step: the link at its cap
     static int var_was; if (want == 4 && nvn_var_fps() != var_was) { var_was = nvn_var_fps(); applied = -1; }   // a new cap: the range again
     if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : want == 4 ? nvn_var_fps() : 60);

@@ -88,8 +88,11 @@ static inline int rec_on(void) {
     // the encode thread: with both on, it skipped every frame and logged it once. A player who picked frame generation
     // asked for it, so it wins, unless DM_NVN_ENC_THREAD was set explicitly. Costs about 4 ms of submit thread per frame
     // on an iPhone 17 Pro Max, inside the 16.7 ms of a 60 fps game frame.
-    { const char *mi = getenv("DM_MFX_INTERP");
-      if (g_rec && !e && mi && *mi && strcmp(mi, "0")) { g_rec = 0; MLOG("Metal encoding stays on the submit thread: frame generation (DM_MFX_INTERP=%s) needs it", mi); } }
+    // The launcher always sets DM_NVN_ENC_THREAD (every row is applied), so "set explicitly" means set by an env file
+    // (DM_ENV_FILE_KEYS, main.m): only that keeps the encode thread on against frame generation
+    { const char *mi = getenv("DM_MFX_INTERP"), *fk = getenv("DM_ENV_FILE_KEYS");
+      int pinned = fk && strstr(fk, "DM_NVN_ENC_THREAD") != NULL;
+      if (g_rec && !pinned && mi && *mi && strcmp(mi, "0")) { g_rec = 0; MLOG("Metal encoding stays on the submit thread: frame generation (DM_MFX_INTERP=%s) needs it", mi); } }
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
     return g_rec;
 }
