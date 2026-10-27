@@ -257,6 +257,11 @@ void dm_fps_state_apply(void) {
     if (t != 0 && t != 30 && t != 60 && !(m->var_step && t > 60 && t <= 240)) {
         LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60%s; using the game's own frame step", e, m->var_step ? " or 61 to 240" : " (above 60 only on a build with a variable frame step)"); t = 0;
     }
+    // Frame generation decides the game's own rate: 30+30 interpolates a game at 30 fps, 60 shown as 120 one at 60. With the
+    // launcher's Frame rate left at 60 and 30+30 chosen, the game ran at 60 and the interpolator, pacing for 30, fought it
+    { const char *mi = getenv("DM_MFX_INTERP");
+      int want = mi && !strcmp(mi, "interp30") ? 30 : mi && !strcmp(mi, "interp") ? 60 : 0;
+      if (want && t != want) { LOG("%s: frame rate %d for frame generation (DM_MFX_INTERP=%s), in place of %d", name, want, mi, t); t = want; } }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     dm_fps_var_cap = t > 60 ? t : 0;
 // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
