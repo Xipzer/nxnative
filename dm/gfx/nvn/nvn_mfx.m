@@ -42,6 +42,7 @@ id<MTLTexture> mfx_scene_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h, M
 id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { (void)dev; (void)w; (void)h; return nil; }
 void mfx_note_scene(void) {}
 void mfx_note_depth(id<MTLTexture> depth) { (void)depth; }
+void mfx_note_objmv(id<MTLTexture> t) { (void)t; }
 void mfx_note_camera(const float *cam, int n) { (void)cam; (void)n; }
 id<MTLResidencySet> mfx_residency(void) { return nil; }
 int mfx_frame_prepare(double frame_s) { (void)frame_s; return -1; }
@@ -62,7 +63,7 @@ static struct {
     id<MTL4FXFrameInterpolator> fi;
     NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat scene_fmt;
     id<MTLTexture> scene[2], ui, mv, out[MFX_OUT], outv[MFX_OUT];
-    id<MTLTexture> pdepth; uint64_t pdepth_frame;   // the previous interpolated frame's depth (copied after its motion), and its g.frames
+    id<MTLTexture> pdepth, objmv; uint64_t pdepth_frame;   // the previous interpolated frame's depth (copied after its motion), and its g.frames
     id<MTLResidencySet> rs;
     id<MTLComputePipelineState> mv_ps;
     id<MTL4ArgumentTable> mv_args[MFX_OUT];
@@ -188,6 +189,7 @@ id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { en
 id<MTLResidencySet> mfx_residency(void) { return g.rs; }
 void mfx_note_scene(void) { g.scene_ok = 1; }
 void mfx_note_depth(id<MTLTexture> d) { if (d && d.pixelFormat == MTLPixelFormatDepth32Float && d.textureType == MTLTextureType2D) g.depth = d; }
+void mfx_note_objmv(id<MTLTexture> t) { g.objmv = t; }   // object motion (nvn_mtl.m mv_pass_setup): the previous NDC position of each G-buffer pixel
 void mfx_note_camera(const float *c, int n) {
     if (n < 84) return;
     for (int i = 0; i < 84; i++) g.cam[i] = c[i];
@@ -224,7 +226,8 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             // depth is continuous (a slope), and within 1 % of one of the nine where it is not (an edge: the range of Link
             // and the land behind him would take in any distance between them)
             "kernel void mfx_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],\n"
-            "                   depth2d<float, access::read> pd [[texture(2)]], constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+            "                   depth2d<float, access::read> pd [[texture(2)]], texture2d<float, access::read> om [[texture(3)]],\n"
+            "                   constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
             "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
             "  float2 uv = (float2(g) + 0.5) * p.inv_size;\n"
             "  float d0 = d.read(g);\n"
@@ -239,7 +242,16 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             "      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {\n"
             "        float z = vz(pd.read(uint2(q + int2(x, y)))); zmin = min(zmin, z); zmax = max(zmax, z); near = near || fabs(z - ze) <= ze * 0.01; }\n"
             "      bool still = zmax <= zmin * 1.05 ? (ze >= zmin * 0.99 && ze <= zmax * 1.01) : near;\n"
-            "      if (!still) m = 0.0;\n"
+            // where the camera cannot explain the pixel (it moved on its own), the object motion a G-buffer draw wrote (nvn_mtl.m mv_*):
+            // the camera is exact for the still world, so object motion is taken only for what moved itself. Taken everywhere, it
+            // gave distant instanced scenery whose instances changed order between frames the motion of another instance
+            "      if (!still) {\n"
+            "        m = 0.0;\n"
+            "        if (p.pad1 > 0.5 && g.x < om.get_width() && g.y < om.get_height()) {\n"
+            "          float2 o = om.read(g).xy;\n"
+            "          if (o.x < 1.0e8) { float2 prv = float2(o.x * 0.5 + 0.5, 0.5 - 0.5 * p.yflip * o.y); m = (prv - uv) * p.size; }\n"
+            "        }\n"
+            "      }\n"
             "    }\n"
             "  }\n"
             "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
@@ -250,7 +262,7 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"mfx_mv"] : nil;
         g.mv_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
         if (!g.mv_ps) MDIE("motion vector kernel: %s", e.localizedDescription.UTF8String);
-        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 3;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 4;
         for (int i = 0; i < MFX_OUT; i++) {
             g.mv_args[i] = [g.dev newArgumentTableWithDescriptor:ad error:&e]; if (!g.mv_args[i]) MDIE("argument table: %s", e.localizedDescription.UTF8String);
             g.mv_par[i] = [g.dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; [g.rs addAllocation:g.mv_par[i]];
@@ -316,6 +328,7 @@ int mfx_frame_prepare(double frame_s) {
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) par[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     par[16] = (float)depth.width; par[17] = (float)depth.height; par[18] = 1.0f / depth.width; par[19] = 1.0f / depth.height; par[20] = (float)g.yflip;
     par[21] = atomic_load(&g_mv_dyn) && g.pdepth_frame && g.pdepth_frame == g.frames - 1 ? 1.0f : 0.0f;   // the previous game frame's depth is there
+    par[22] = g.objmv && g.objmv.width == depth.width && g.objmv.height == depth.height ? 1.0f : 0.0f;   // object motion for this depth
     g.enc_depth = depth;
     return s;
 }
@@ -325,6 +338,7 @@ NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int s, id<MTL4CounterHeap> h
     id<MTLTexture> depth = g.enc_depth; g.enc_depth = nil; g.last_depth = depth; g.last_slot = s;
     [g.mv_args[s] setTexture:depth.gpuResourceID atIndex:0]; [g.mv_args[s] setTexture:g.mv.gpuResourceID atIndex:1]; [g.mv_args[s] setAddress:g.mv_par[s].gpuAddress atIndex:0];
     [g.mv_args[s] setTexture:g.pdepth.gpuResourceID atIndex:2];
+    [g.mv_args[s] setTexture:(g.objmv ? g.objmv : g.mv).gpuResourceID atIndex:3];   // object motion (unused when par[22] is 0)
     id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch | MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];   // the game's frame is done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.mv_args[s]];
@@ -429,7 +443,7 @@ void mfx_dump(long frame, id<MTLTexture> swap_prev, id<MTLTexture> swap_cur) {
     // after encode, cur was flipped: scene[cur ^ 1] is this frame, scene[cur] the previous one
     NSUInteger sb = g.scene_fmt == MTLPixelFormatRGBA16Float ? 8 : 4;   // RG11B10F canvas copies: 4 bytes
     dump_tex(q, g.scene[g.cur], sb, dir, "prev", turning); dump_tex(q, g.scene[g.cur ^ 1], sb, dir, "cur", turning);
-    dump_tex(q, g.last_depth, 4, dir, "depth", turning); dump_tex(q, g.mv, 4, dir, "motion", turning); dump_tex(q, g.out[g.last_slot], 4, dir, "out", turning);
+    dump_tex(q, g.last_depth, 4, dir, "depth", turning); dump_tex(q, g.mv, 4, dir, "motion", turning); if (g.objmv) dump_tex(q, g.objmv, 8, dir, "objmv", turning); dump_tex(q, g.out[g.last_slot], 4, dir, "out", turning);
     MLOG("dump %llu (game frame %ld): yaw step %.3f deg, camera %.3f %.3f %.3f -> %s", (unsigned long long)turning, frame, step, g.cam[47], g.cam[51], g.cam[55], dir);
 }
 id<MTLTexture> mfx_output(int slot) { return slot >= 0 && slot < MFX_OUT ? g.outv[slot] : nil; }

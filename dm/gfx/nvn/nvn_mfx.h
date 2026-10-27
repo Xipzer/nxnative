@@ -21,6 +21,7 @@ id<MTLTexture> mfx_scene_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h, M
 id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h);
 void mfx_note_scene(void);
 void mfx_note_depth(id<MTLTexture> depth);
+void mfx_note_objmv(id<MTLTexture> t);   // object motion: the previous position of each G-buffer pixel, NDC (RG32Float; 1e9 = none)
 void mfx_note_camera(const float *cam, int n);
 id<MTLResidencySet> mfx_residency(void);   // our textures; the queue adds it once
 // At the game's present. prepare: checks this frame's inputs and returns the output slot of the interpolated frame

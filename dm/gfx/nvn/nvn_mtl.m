@@ -3109,6 +3109,7 @@ static void mfx_note_swap(const tex_t *t) {   // a presented texture (the canvas
 }
 static int fz_active(void);   // a merged render pass is open (g_fz, defined further on)
 static int mfx_to_swap(uint64_t serial) { for (int i = 0; i < g_mfx.nswap; i++) if (g_mfx.swap[i] == serial) return 1; return 0; }
+static void mv_pass_setup(MTL4RenderPassDescriptor *pd);   // object motion, below pso_desc
 static void mfx_pass_setup(MTL4RenderPassDescriptor *pd, int clear_only) {
     g_mfx.pass_mfx = 0;
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
@@ -3325,7 +3326,8 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
     }
-    if (mfx_on()) mfx_pass_setup(pd, clear_only); else g_mfx.pass_mfx = 0;   // frame interpolation: canvas, G-buffer depth, UI layer (attachment 7)
+    if (mfx_on()) mfx_pass_setup(pd, clear_only); else g_mfx.pass_mfx = 0;
+    mv_pass_setup(pd);   // object motion: attachment 6 of a G-buffer pass   // frame interpolation: canvas, G-buffer depth, UI layer (attachment 7)
     if (g_vis_on) {
         // Slots used up (one submission exceeds VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired (it is still used in rotation, and retiring removes it from the residency set); only a previous overflow buffer is
         if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
@@ -4947,9 +4949,246 @@ static void mfx_pso_attach7(MTLRenderPipelineDescriptor *d, const pso_key *k) {
         c.alphaBlendOperation = MTLBlendOperationAdd;
     }
 }
+/* ---------- Object motion vectors (DM_MV, frame interpolation) ----------
+   Breath of the Wild computes no motion vectors, so the interpolator had only the camera's (nvn_mfx.m mfx_mv): what moves on its
+   own (Link's limbs, enemies) got none and jumped between generated frames whenever the cadence was uneven. The replay holds every
+   draw's uniforms, so each G-buffer draw is drawn with a variant of its own vertex shader that runs the shader's body twice: once with
+   this frame's uniforms and once with the same object's uniforms from the previous frame (camera, model matrix, bone palette), bound
+   as a second argument buffer at MV_PREV_ABI. A variant of the fragment shader writes the previous position, in normalized device
+   coordinates, to colour attachment 6 (RG32Float); the motion kernel takes it where it is written and the camera's motion elsewhere.
+   Objects are matched across frames by vertex shader, stream 0, index buffer, count and their occurrence among such draws.
+   Variants are made in the background from the shaders' MSL (g_msl_dir on the Mac, DM_MFX_MSL_DIR or Documents/mfx_msl on iOS);
+   a draw whose pair is not made yet draws as before, leaving the attachment's "no data" value, so nothing waits. */
+#define MV_PREV_ABI 12          // [[buffer(12)]]: free in every translated shader (0: arguments, 13: geometry capture, 14-30: vertex streams)
+#define MV_NODATA 1.0e9f        // attachment 6's clear value: no object motion here, the camera's is used
+static int mv_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_MV"); v = e ? atoi(e) != 0 : 1;
+                 if (v && mfx_on()) MLOG("[mv] object motion vectors on (DM_MV=0 turns them off): G-buffer draws also write their previous position"); }
+    return v && mfx_on();
+}
+static struct { id<MTLTexture> depth, tex; uint64_t frame; int pass_on, draw; uint64_t key; uint64_t n_draw, n_mv, n_prev; } g_mv;
+static _Atomic int g_mv_ok, g_mv_bad;
+/* The per-object store: two frames of uniform bytes, swapped at each new frame. An entry holds the bytes of every uniform block
+   the draw's vertex shader reads, in binding order */
+#define MV_SLOTS 16384
+#define MV_POOL (24u << 20)
+typedef struct { uint64_t key; uint32_t off, len; uint16_t nreg; uint16_t reg[8]; uint32_t rlen[8]; } mv_ent;
+typedef struct { mv_ent *e; uint8_t *pool; uint32_t used; int n; } mv_frame;
+static mv_frame g_mvf[2]; static int g_mvc;   // g_mvf[g_mvc] is being filled, the other is last frame's
+static void mv_new_frame(uint64_t f) {
+    if (f == g_mv.frame) return;
+    if (f / 300 != g_mv.frame / 300 && g_mv.n_draw) { MLOG("[mv] up to frame %llu: G-buffer draws %llu, with object motion %llu (%.0f%%), of those with a previous frame %llu; pairs made %d, not %d",
+        (unsigned long long)f, g_mv.n_draw, g_mv.n_mv, 100.0 * g_mv.n_mv / g_mv.n_draw, g_mv.n_prev, g_mv_ok, g_mv_bad); g_mv.n_draw = g_mv.n_mv = g_mv.n_prev = 0; }
+    g_mv.frame = f; g_mvc ^= 1; mv_frame *c = &g_mvf[g_mvc];
+    if (!c->e) { c->e = calloc(MV_SLOTS, sizeof *c->e); c->pool = malloc(MV_POOL); }
+    memset(c->e, 0, MV_SLOTS * sizeof *c->e); c->used = 0; c->n = 0;
+}
+static mv_ent *mv_find(mv_frame *fr, uint64_t key, int add) {
+    if (!fr->e) return NULL;
+    for (uint32_t i = (uint32_t)(key ^ key >> 29) & (MV_SLOTS - 1), n = 0; n < MV_SLOTS; i = (i + 1) & (MV_SLOTS - 1), n++) {
+        if (fr->e[i].key == key) return &fr->e[i];
+        if (!fr->e[i].key) { if (!add || fr->n >= MV_SLOTS * 3 / 4) return NULL; fr->e[i].key = key; fr->n++; return &fr->e[i]; }
+    }
+    return NULL;
+}
+/* The draw's object key: what stays the same for an object from frame to frame, plus its occurrence among draws with the same key
+   this frame (the same mesh drawn many times: trees, grass) */
+static void mv_draw_key(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+    mv_new_frame(atomic_load(&g_cur_frame));
+    uint64_t h = 1469598103934665603ull;
+    #define MVH(x) do { uint64_t v_ = (uint64_t)(x); for (int i_ = 0; i_ < 8; i_++) { h ^= (v_ >> (8 * i_)) & 0xff; h *= 1099511628211ull; } } while (0)
+    for (int i = 0; i < 16 && pr->sh[0]->key[i]; i++) MVH(pr->sh[0]->key[i]);
+    MVH(S.vbuf[0].address); MVH(di ? di->ibuf : 0); MVH(dw ? dw->count : di->count); MVH(dw ? dw->first : di->base_vertex); MVH(dw ? dw->instances : di->instances);
+    static uint64_t occ_frame; static uint32_t occ_key[4096]; static uint16_t occ_n[4096];
+    if (occ_frame != g_mv.frame) { occ_frame = g_mv.frame; memset(occ_n, 0, sizeof occ_n); memset(occ_key, 0, sizeof occ_key); }
+    uint32_t s = (uint32_t)(h ^ h >> 32) & 4095, k32 = (uint32_t)(h >> 7) | 1; int seen = 0;
+    for (int n = 0; n < 4096; n++, s = (s + 1) & 4095) { if (!occ_key[s]) { occ_key[s] = k32; break; } if (occ_key[s] == k32) break; }
+    seen = occ_n[s]++;
+    MVH(seen);
+    #undef MVH
+    g_mv.key = h | 1;
+}
+/* MSL of a shader key, for its variants: the Mac's shader cache, else DM_MFX_MSL_DIR or the app's Documents/mfx_msl (pushed over USB) */
+static NSString *mv_msl(const char *key) {
+    NSString *k = @(key); if (![k hasSuffix:@"_b"]) k = [k stringByAppendingString:@"_b"];
+    NSMutableArray *dirs = [NSMutableArray array];
+    if (g_msl_dir) [dirs addObject:g_msl_dir];
+    if (getenv("DM_MFX_MSL_DIR")) [dirs addObject:@(getenv("DM_MFX_MSL_DIR"))];
+    if (getenv("HOME")) [dirs addObject:[NSString stringWithFormat:@"%s/Documents/mfx_msl", getenv("HOME")]];
+    for (NSString *d in dirs) { NSString *s = [NSString stringWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.metal", d, k] encoding:NSUTF8StringEncoding error:nil]; if (s) return s; }
+    return nil;
+}
+// The text between the bracket at open and its match
+static NSRange mv_match(NSString *s, NSUInteger open, unichar a, unichar b) {
+    int depth = 0;
+    for (NSUInteger i = open; i < s.length; i++) { unichar c = [s characterAtIndex:i];
+        if (c == a) depth++; else if (c == b && --depth == 0) return NSMakeRange(open + 1, i - open - 1); }
+    return NSMakeRange(NSNotFound, 0);
+}
+/* The vertex variant: main0's body as a function, called with this frame's arguments and with the previous frame's, the two clip
+   positions passed on to the fragment shader */
+static NSString *mv_vs_source(NSString *src) {
+    NSRange sig = [src rangeOfString:@"vertex main0_out main0("];
+    NSRange outs = [src rangeOfString:@"struct main0_out\n{\n"];
+    if (sig.location == NSNotFound || outs.location == NSNotFound) return nil;
+    NSRange pr = mv_match(src, NSMaxRange(sig) - 1, '(', ')'); if (pr.location == NSNotFound) return nil;
+    NSUInteger bo = [src rangeOfString:@"{" options:0 range:NSMakeRange(NSMaxRange(pr), src.length - NSMaxRange(pr))].location;
+    NSRange body = mv_match(src, bo, '{', '}'); if (body.location == NSNotFound) return nil;
+    NSString *params = [src substringWithRange:pr];
+    NSMutableArray *plain = [NSMutableArray array], *names = [NSMutableArray array];
+    for (NSString *p0 in [params componentsSeparatedByString:@","]) {
+        NSString *p = [p0 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSRange at = [p rangeOfString:@"[["]; if (at.location != NSNotFound) p = [[p substringToIndex:at.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSRange sp = [p rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@" &*"] options:NSBackwardsSearch];
+        if (sp.location == NSNotFound) return nil;
+        [plain addObject:p]; [names addObject:[p substringFromIndex:sp.location + 1]];
+    }
+    if (![names containsObject:@"spvDescriptorSet0"]) return nil;
+    NSString *call = [names componentsJoinedByString:@", "];
+    NSString *callp = [call stringByReplacingOccurrencesOfString:@"spvDescriptorSet0" withString:@"dm_mv_prev"];
+    NSString *head = [src substringToIndex:sig.location];
+    head = [head stringByReplacingOccurrencesOfString:@"struct main0_out\n{\n" withString:@"struct main0_out\n{\n    float4 dm_mv_cur [[user(dm_mv_cur)]];\n    float4 dm_mv_prev [[user(dm_mv_prev)]];\n"];
+    return [NSString stringWithFormat:@"%@static inline main0_out dm_mv_body(%@)\n{%@}\n\n"
+            "vertex main0_out main0(%@, constant spvDescriptorSetBuffer0& dm_mv_prev [[buffer(%d)]])\n{\n"
+            "    main0_out o = dm_mv_body(%@);\n    main0_out p = dm_mv_body(%@);\n"
+            "    o.dm_mv_cur = o.gl_Position; o.dm_mv_prev = p.gl_Position;\n    return o;\n}\n",
+            head, [plain componentsJoinedByString:@", "], [src substringWithRange:body], params, MV_PREV_ABI, call, callp];
+}
+/* The fragment variant: also writes the previous position (normalized device coordinates) to colour attachment 6 */
+static NSString *mv_fs_source(NSString *src) {
+    NSRange sig = [src rangeOfString:@"fragment main0_out main0("];
+    NSRange outs = [src rangeOfString:@"struct main0_out\n{\n"];
+    if (sig.location == NSNotFound || outs.location == NSNotFound || [src rangeOfString:@"[[color(6)]]"].location != NSNotFound) return nil;
+    NSRange pr = mv_match(src, NSMaxRange(sig) - 1, '(', ')'); if (pr.location == NSNotFound) return nil;
+    NSString *params = [src substringWithRange:pr];
+    NSMutableString *s = [src mutableCopy];
+    NSString *mvin = @"    float4 dm_mv_cur [[user(dm_mv_cur)]];\n    float4 dm_mv_prev [[user(dm_mv_prev)]];\n";
+    NSString *inname = @"in";
+    if ([s rangeOfString:@"struct main0_in\n{\n"].location != NSNotFound) {
+        NSRange stg = [params rangeOfString:@"[[stage_in]]"]; if (stg.location == NSNotFound) return nil;
+        NSString *before = [[params substringToIndex:stg.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        inname = [before substringFromIndex:[before rangeOfString:@" " options:NSBackwardsSearch].location + 1];
+        [s replaceOccurrencesOfString:@"struct main0_in\n{\n" withString:[@"struct main0_in\n{\n" stringByAppendingString:mvin] options:0 range:NSMakeRange(0, s.length)];
+    } else {
+        int noparams = [[params stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] length] == 0;
+        [s replaceCharactersInRange:sig withString:[NSString stringWithFormat:@"struct main0_in\n{\n%@};\n\nfragment main0_out main0(main0_in dm_mv_in [[stage_in]]%@", mvin, noparams ? @"" : @", "]];
+        inname = @"dm_mv_in";
+    }
+    [s replaceOccurrencesOfString:@"struct main0_out\n{\n" withString:@"struct main0_out\n{\n    float4 dm_mv_out [[color(6)]];\n" options:0 range:NSMakeRange(0, s.length)];
+    // every return of main0 (the variant's other entry points keep their own returns): from main0's opening brace to its match
+    NSRange sig2 = [s rangeOfString:@"fragment main0_out main0("];
+    NSRange pr2 = mv_match(s, NSMaxRange(sig2) - 1, '(', ')');
+    NSUInteger bo = [s rangeOfString:@"{" options:0 range:NSMakeRange(NSMaxRange(pr2), s.length - NSMaxRange(pr2))].location;
+    NSRange body = mv_match(s, bo, '{', '}'); if (body.location == NSNotFound) return nil;
+    NSString *ret = [NSString stringWithFormat:@"{ out.dm_mv_out = float4(%@.dm_mv_prev.xy / %@.dm_mv_prev.w, 0.0, 1.0); return out; }", inname, inname];
+    NSMutableString *b = [[s substringWithRange:body] mutableCopy];
+    if (![b containsString:@"return out;"]) return nil;
+    [b replaceOccurrencesOfString:@"return out;" withString:ret options:0 range:NSMakeRange(0, b.length)];
+    [s replaceCharactersInRange:body withString:b];
+    return s;
+}
+/* The pair for (vertex, fragment): its fragment variant, or nil while it is being made or when it cannot be made. g_mv_vs maps
+   the fragment variant to its vertex variant, for pso_desc */
+static NSMutableDictionary<NSString *, id> *g_mv_pairs; static NSMapTable *g_mv_vs; static os_unfair_lock g_mv_lock = OS_UNFAIR_LOCK_INIT;
+static id<MTLFunction> mv_vs_for(const void *fsfn) {
+    if (!fsfn) return nil;
+    os_unfair_lock_lock(&g_mv_lock); id<MTLFunction> v = g_mv_vs ? (__bridge id<MTLFunction>)NSMapGet(g_mv_vs, fsfn) : nil; os_unfair_lock_unlock(&g_mv_lock);
+    return v;
+}
+static id<MTLFunction> mv_pair(NvShader *vs, NvShader *fs) {
+    if (!vs || !fs || !vs->key[0] || !fs->key[0] || vs->layer_out) return nil;
+    NSString *job = [NSString stringWithFormat:@"%s %s", vs->key, fs->key];
+    os_unfair_lock_lock(&g_mv_lock);
+    if (!g_mv_pairs) { g_mv_pairs = [NSMutableDictionary dictionary]; g_mv_vs = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsOpaquePersonality valueOptions:NSPointerFunctionsStrongMemory]; }
+    id have = g_mv_pairs[job]; if (!have) g_mv_pairs[job] = @YES;
+    os_unfair_lock_unlock(&g_mv_lock);
+    if (have) return have == (id)NSNull.null || [have isKindOfClass:[NSNumber class]] ? nil : (id<MTLFunction>)have;
+    NSString *vk = @(vs->key), *fk = @(fs->key);
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("nvn.mv-variants", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    dispatch_async(q, ^{ @autoreleasepool {
+        id result = NSNull.null; id<MTLFunction> vf = nil;
+        NSString *vsrc = mv_msl(vk.UTF8String), *fsrc = mv_msl(fk.UTF8String);
+        NSString *v2 = vsrc ? mv_vs_source(vsrc) : nil, *f2 = fsrc ? mv_fs_source(fsrc) : nil;
+        const char *why = !vsrc || !fsrc ? "no MSL source" : !v2 ? "vertex shader not in the expected form" : !f2 ? "fragment shader not in the expected form" : NULL;
+        if (!why) {
+            MTLCompileOptions *o = [MTLCompileOptions new]; o.preserveInvariance = YES; NSError *e = nil;
+            id<MTLLibrary> vl = [g_dev newLibraryWithSource:v2 options:o error:&e]; vf = vl ? [vl newFunctionWithName:@"main0"] : nil;
+            if (!vf) { static int n; if (n++ < 6) MLOG("[RED] [mv] vertex variant of %s: %s", vk.UTF8String, e.localizedDescription.UTF8String); why = "vertex variant does not compile"; }
+            else { id<MTLLibrary> fl = [g_dev newLibraryWithSource:f2 options:o error:&e]; id<MTLFunction> ff = fl ? [fl newFunctionWithName:@"main0"] : nil;
+                   if (!ff) { static int n; if (n++ < 6) MLOG("[RED] [mv] fragment variant of %s: %s", fk.UTF8String, e.localizedDescription.UTF8String); why = "fragment variant does not compile"; }
+                   else result = ff; }
+        }
+        os_unfair_lock_lock(&g_mv_lock);
+        g_mv_pairs[job] = result; if (result != (id)NSNull.null) NSMapInsert(g_mv_vs, (__bridge const void *)result, (__bridge const void *)vf);
+        NSUInteger made = g_mv_pairs.count; os_unfair_lock_unlock(&g_mv_lock);
+        int o2 = why ? g_mv_ok : ++g_mv_ok, b2 = why ? ++g_mv_bad : g_mv_bad;
+        if (why && getenv("DM_MV_DUMP")) {   // diagnostic: the variant sources that did not compile
+            NSString *d = @(getenv("DM_MV_DUMP")); [v2 writeToFile:[NSString stringWithFormat:@"%@/%@_v.metal", d, vk] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            [f2 writeToFile:[NSString stringWithFormat:@"%@/%@_f.metal", d, fk] atomically:NO encoding:NSUTF8StringEncoding error:nil]; }
+        if (made <= 8 || made % 100 == 0 || (why && b2 <= 12)) MLOG("[mv] pair %s / %s: %s (%d made, %d not, %lu asked for)", vk.UTF8String, fk.UTF8String, why ? why : "made", o2, b2, (unsigned long)made);
+    } });
+    return nil;
+}
+/* At a G-buffer draw's vertex arguments: keep this draw's uniform bytes for the next frame and bind the previous frame's, as the
+   argument buffer the vertex variant reads at MV_PREV_ABI (this frame's where the object has no previous entry: no motion) */
+static void mv_bind_prev(id<MTLCommandEncoder> en, NvShader *sh, const uint64_t *slots, NSUInteger arg_len) {
+    mv_frame *cur = &g_mvf[g_mvc], *prv = &g_mvf[g_mvc ^ 1];
+    mv_ent *ce = mv_find(cur, g_mv.key, 1), *pe = mv_find(prv, g_mv.key, 0);
+    uint64_t ps[NVN_REFL_MAXARG]; memcpy(ps, slots, arg_len < sizeof ps ? arg_len : sizeof ps);
+    if (ce) { ce->off = cur->used; ce->nreg = 0; }
+    if (pe) g_mv.n_prev++;
+    for (int i = 0; i < sh->rf.nb; i++) {
+        const nvn_rbind *b = &sh->rf.b[i]; if (b->kind != NVN_RB_CBUF || b->reg >= 16) continue;
+        const p_bind_buf *u = &S.ubo[0][b->reg]; if (!u->addr) continue;
+        uint32_t len = (uint32_t)cb_len(sh, b->reg, u->size); if (!len || len > 65536) continue;
+        if (ce && ce->nreg < 8 && cur->used + len <= MV_POOL) {   // this frame's bytes, as the game left them for this draw
+            memcpy(cur->pool + cur->used, (const void *)u->addr, len); ce->reg[ce->nreg] = (uint16_t)b->reg; ce->rlen[ce->nreg++] = len; cur->used += (len + 15) & ~15u; }
+        if (pe) {   // the same block last frame: uploaded, and its address takes this one's place
+            uint32_t o = pe->off;
+            for (int r = 0; r < pe->nreg; r++) { if (pe->reg[r] == b->reg && pe->rlen[r] == len) {
+                    id<MTLBuffer> buf; size_t off = arena_alloc(len, &buf); memcpy((uint8_t *)buf.contents + off, prv->pool + o, len);
+                    ps[b->aid] = g_cur_arena->gpu + off; break; }
+                o += (pe->rlen[r] + 15) & ~15u; }
+        }
+    }
+    id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab); memcpy((uint8_t *)ab.contents + off, ps, arg_len);
+    enc_r_args((id<MTLRenderCommandEncoder>)en, MTLRenderStageVertex, g_cur_arena->gpu + off, MV_PREV_ABI);
+}
+/* A G-buffer pass (the depth the interpolator takes, every pass of the frame that renders into it): colour attachment 6 holds the
+   previous positions, cleared to "no data" by the first such pass of the frame and loaded by the rest */
+static void mv_pass_setup(MTL4RenderPassDescriptor *pd) {
+    g_mv.pass_on = 0;
+    if (!mv_on()) return;
+    id<MTLTexture> dt = pd.depthAttachment.texture, c0 = pd.colorAttachments[0].texture;
+    if (!dt || !c0 || pd.colorAttachments[6].texture || dt.pixelFormat != MTLPixelFormatDepth32Float) return;
+    int nc = 0; for (int i = 0; i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
+    if (nc < 3 || dt.width != c0.width || dt.height != c0.height) return;
+    static uint64_t cleared_frame; uint64_t f = atomic_load(&g_cur_frame);
+    if (!g_mv.tex || g_mv.tex.width != dt.width || g_mv.tex.height != dt.height) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float width:dt.width height:dt.height mipmapped:NO];
+        td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        if (g_mv.tex) res_remove(g_mv.tex);
+        g_mv.tex = [g_dev newTextureWithDescriptor:td]; g_mv.tex.label = @"object motion (previous NDC)"; res_add(g_mv.tex); res_commit(); cleared_frame = 0;
+        MLOG("[mv] object motion target %lux%lu", (unsigned long)dt.width, (unsigned long)dt.height);
+    }
+    MTLRenderPassColorAttachmentDescriptor *a = pd.colorAttachments[6];
+    a.texture = g_mv.tex; a.storeAction = MTLStoreActionStore;
+    a.loadAction = cleared_frame == f ? MTLLoadActionLoad : MTLLoadActionClear; a.clearColor = MTLClearColorMake(MV_NODATA, MV_NODATA, 0, 0);
+    cleared_frame = f; g_mv.depth = dt;
+    g_pass.cfmt[6] = (uint32_t)MTLPixelFormatRG32Float; g_mv.pass_on = 1;
+    mfx_note_objmv(g_mv.tex);
+}
+/* Attachment 6 in a pipeline of such a pass: written, unblended, only by a motion variant */
+static void mv_pso_attach6(MTLRenderPipelineDescriptor *d, id<MTLFunction> fsfn) {
+    MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[6];
+    c.blendingEnabled = NO; c.writeMask = mv_vs_for((__bridge const void *)fsfn) ? MTLColorWriteMaskRed | MTLColorWriteMaskGreen : MTLColorWriteMaskNone;
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs->fn; d.fragmentFunction = fsfn ? fsfn : fs ? fs->fn : nil;
+    { id<MTLFunction> mvv = fsfn ? mv_vs_for((__bridge const void *)fsfn) : nil; if (mvv) d.vertexFunction = mvv; }   // object motion: the vertex variant of a motion pair
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
     // Pipelines are built on several threads at once: the keys and the library are set up once (a lazy setup raced, and a thread used a library another had just replaced: Hades II, 6 keys)
     if (fs) { static char keys[6][24]; static int nk; static id<MTLLibrary> hl; static dispatch_once_t once;
@@ -4993,6 +5232,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         }
     }
     if (k->cfmt[7] && k->fsfn) mfx_pso_attach7(d, k);   // frame interpolation: the UI layer
+    if (k->cfmt[6] == (uint32_t)MTLPixelFormatRG32Float && g_mv.tex) mv_pso_attach6(d, fsfn);   // object motion: attachment 6
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
     const nvn_refl *rf = &vs->rf; int nconv = 0, on = vin_on(vs, k, k->fsfn == TF_MARK || k->fsfn == GEO_MARK || k->fsfn == DISCARD_MARK);
@@ -5782,6 +6022,8 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     // its own key, no stand-in, no queued or Metal 4 build, not recorded in the prewarm lists
     int ov = ms_fn != nil;
     if (!ov && !g_pso_lmap && g_mfx.role && g_pass.cfmt[7]) { ms_fn = fs_fn_mfx(fs, g_mfx.role); k.fsfn = ms_fn ? (__bridge void *)ms_fn : MFX_MASK_MARK; ov = 1; }
+    g_mv.draw = 0;
+    if (!ov && !g_pso_lmap && g_mv.pass_on && fs && !pso_all_uint(&k, fs, 0) && !pso_mixed_uint(&k, fs, 0)) { id<MTLFunction> f = mv_pair(vs, fs); if (f) { ms_fn = f; k.fsfn = (__bridge void *)f; ov = 1; g_mv.draw = 1; } }
     // DM_PSO_PULL_ALL=1 (diagnostic): every draw that has a pulling pipeline draws with it, never with the pipeline for its layout
     { static int all = -1; if (all < 0) { const char *ev = getenv("DM_PSO_PULL_ALL"); all = ev && !strcmp(ev, "1"); if (all) MLOG("DM_PSO_PULL_ALL=1: every draw with a pulling pipeline draws with it (diagnostic)"); }
       if (all && !g_pso_lmap && !ov && hybrid_on()) { __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs); if (h) { g_pso_pull = 1; return h; } } }
@@ -6296,7 +6538,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
 static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
     if (!sh->ae) return 1;
     args_sync_dirty();
-    if (!passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst)) {
+    if (!passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !(g_mv.draw && nvn_stage == 0)) {
         bind_args(en, nvn_stage, metal_vertex, sh->ab_buf, sh->ab_gpu, sh->ab_off, sh->rf.abi);
         g_stat_args_reuse++;
         return 1;
@@ -6522,6 +6764,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     }
     #undef USE
     os_unfair_lock_unlock(&g_rmu);
+    if (g_mv.draw && nvn_stage == 0 && metal_vertex) mv_bind_prev(en, sh, slots, arg_len);   // object motion: the previous frame's uniforms at MV_PREV_ABI
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
     memcpy((uint8_t *)ab.contents + off, slots, arg_len);
     bind_args(en, nvn_stage, metal_vertex, ab, g_cur_arena->gpu + off, off, sh->rf.abi);
@@ -8779,6 +9022,11 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         if (r != g_mfx.role) { g_mfx.role = r; g_pso_dirty = 1; }
     }
     if (g_mfx.want_cam) mfx_take_camera();
+    if (g_mv.pass_on && pr && pr->sh[0] && pr->sh[1]) {   // object motion: this draw's key; its pipeline again when its motion pair has been made
+        mv_draw_key(pr, dw, di);
+        int ready = mv_pair(pr->sh[0], pr->sh[1]) != nil; if (ready != g_mv.draw) g_pso_dirty = 1;
+        g_mv.n_draw++; g_mv.n_mv += ready;
+    } else if (g_mv.draw) { g_mv.draw = 0; g_pso_dirty = 1; }
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
     // The pipeline depends only on (program, render pass targets, blend / color / write mask / multisample state, vertex layout): if these did not change, reuse the previous one
     static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_pull;   // cur_pull: a hybrid (pulling) pipeline, asked for again at the next draw
