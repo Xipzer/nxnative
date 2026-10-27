@@ -124,8 +124,10 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
   the exact coverage record stay in
   `<NSP folder>/0100A3D008C5C000-work/release-1.0.0/`; the final report is
   `reports/full-final-2/report.md` there. All four pre-push CI jobs pass on
-  the tested production source; subsequent changes only record these
-  results and the usage manifest.
+  the tested production source. The subsequent frontend, Mac-launcher and
+  split-progress integration leaves runtime, shader-chain and iOS sources
+  unchanged; 86 affected tests and pinned lint pass, and the generated iOS
+  launcher settings exactly match the verified IPA.
 
 ## Pipeline cache ownership
 
