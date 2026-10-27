@@ -1576,7 +1576,12 @@ static int thermal_capped(void) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     static int on = -1, capped; static uint64_t last, calm_since;
     pthread_mutex_lock(&mu);
-    if (on < 0) { const char *e = getenv("DM_THERMAL_CAP"); on = !(e && !strcmp(e, "0")); }
+    if (on < 0) { const char *e = getenv("DM_THERMAL_CAP"); on = !(e && !strcmp(e, "0"));
+        // Adaptive quality (DM_QUALITY_AUTO, nvn_mtl.m q_tick) holds the frame rate by lowering the picture, so it replaces the
+        // halving to 30: with both, the cap halved the rate and adaptive quality read every 33 ms frame as late and lowered the
+        // picture as well. An env file's DM_THERMAL_CAP still decides (the launcher sets every row, so only an env file is explicit)
+        const char *qa = getenv("DM_QUALITY_AUTO"), *fk = getenv("DM_ENV_FILE_KEYS");
+        if (on && qa && atoi(qa) && !(fk && strstr(fk, "DM_THERMAL_CAP"))) { on = 0; LOG("[nvn] thermal cap off: adaptive quality (DM_QUALITY_AUTO) lowers the picture instead of the frame rate"); } }
     if (on) {
         uint64_t now = now_ns();
         if (now - last >= 1000000000ull) {   // the thermal state is read once a second
