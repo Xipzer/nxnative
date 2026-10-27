@@ -4874,7 +4874,11 @@ static id<MTLFunction> fs_fn_mfx(NvShader *fs, int role) {
     dispatch_async(q, ^{ @autoreleasepool {
         const char *key = keyS.UTF8String;
         id result = NSNull.null;
+        // The app carries compiled libraries only. Without DM_MFX_MSL_DIR, the app's own Documents/mfx_msl is tried, which a
+        // build tool can fill over USB with the build's fragment MSL (the game's container path is not known in advance)
         const char *dir = getenv("DM_MFX_MSL_DIR");
+        static char docs[1024];
+        if (!dir && getenv("HOME")) { snprintf(docs, sizeof docs, "%s/Documents/mfx_msl", getenv("HOME")); if (!access(docs, R_OK)) dir = docs; }
         NSString *path = dir ? [NSString stringWithFormat:@"%s/%s%s.metal", dir, key, [keyS hasSuffix:@"_b"] ? "" : "_b"] : nil;   // the shader's key names its library: <key>.metal beside <key>.metallib
         NSString *src = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
         if (!src) MLOG("[RED] [mfx] fragment shader %s: no MSL source (%s); its draws stay out of the UI layer", key, dir ? path.UTF8String : "DM_MFX_MSL_DIR is not set");
