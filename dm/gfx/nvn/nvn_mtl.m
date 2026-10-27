@@ -10262,7 +10262,8 @@ static int q_auto(void) {
 }
 static void q_tick(void) {
     if (!q_auto() || !dm_fps_state) return;
-    float target; memcpy(&target, dm_fps_state, sizeof target);
+    // The cap the frame step uses now, not the target the player picked: while the thermal cap holds 30, a 33 ms frame is on time
+    extern int nvn_fps_cap_now(void); float target = (float)nvn_fps_cap_now();
     if (target <= 0) return;   // the game paces itself: no budget to miss
     static uint64_t last_ns, up_ns; static int late, seen, clean, need = 3; static float player = -1;
     uint64_t now = now_ns(), dt = last_ns ? now - last_ns : 0; last_ns = now;
