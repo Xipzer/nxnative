@@ -18,6 +18,7 @@ int front_ios_boot_ok(void);
 bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
 
 static CAMetalLayer *g_layer;
+static int g_screen_hz;   // front_screen_max_fps below
 // front_hud_env runs before the host's early loading, but at that point only an env file can have set DM_METAL_HUD:
 // the launcher's own choice arrives after the loading may already have made the first MTLDevice, and Metal reads
 // MTL_HUD_ENABLED only then. The launcher keeps each choice in UserDefaults, so last run's choice is readable at load
@@ -92,6 +93,7 @@ static void front_hud_apply(const char *when) {
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
+    g_screen_hz = (int)UIScreen.mainScreen.maximumFramesPerSecond;
     front_hud_apply("game view");   // Apple's HUD over the game: frame rate, frame and GPU time, memory
     dm_haptics_apple_init();
     self.pad = dm_gamepad_view(self.view.bounds);
@@ -190,6 +192,10 @@ void front_progress(const char *title, long done, long total) {
                              [NSNumberFormatter localizedStringFromNumber:@(total) numberStyle:NSNumberFormatterDecimalStyle]];
     });
 }
+// The screen's highest refresh rate, read on the main thread when the game view is made (UIScreen is the main thread's).
+// The Metal layer asked for 0 here before, as the Mac's front_mac.m is the only other definition: interpolation at half
+// the screen rate could not tell a 120 Hz iPhone or iPad from a 60 Hz one and kept the display link at 60
+int front_screen_max_fps(void) { return g_screen_hz; }
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 
