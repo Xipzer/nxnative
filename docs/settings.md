@@ -5,8 +5,13 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Anisotropic filtering](#anisotropic-filtering), [Trilinear filtering](#trilinear-filtering), [Game language](#game-language), [Frame-rate counter](#frame-rate-counter)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Upscaling detail](#upscaling-detail), [Sharpening](#sharpening), [Game language](#game-language), [Frame-rate counter](#frame-rate-counter)
+The screen before the game starts shows the settings the game supports. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Picture**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Picture**, beside **Render scale**.
+
+- [Tested defaults](#tested-defaults)
+- [Game](#game): [Frame rate](#frame-rate), [Console mode](#console-mode), [Game language](#game-language)
+- [Picture](#picture): [Render scale](#render-scale), [Upscaling](#upscaling)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength)
-- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
+- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Frame-rate counter](#frame-rate-counter), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [Settings in a file](#settings-in-a-file)
 
 ## Tested defaults
@@ -21,13 +26,21 @@ When you change a setting and tap **Play**, the app keeps your choice, also when
 
 Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way.
 
-### Render scale
-
-The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed there and the game's own dynamic resolution is off; 100 % keeps the game's own. Lower can be lighter on the GPU but is blurrier; the HUD and text keep their sharpness. Only games the app can scale offer it.
-
 ### Console mode
 
 **Docked** renders at the Switch's TV resolution, **Handheld** at its lower handheld resolution, which is lighter on the phone and can give a higher frame rate.
+
+### Game language
+
+The game's own languages. The app was packed with one of them; pick another here without repacking.
+
+## Picture
+
+How the finished frame looks. These change what you see, not what the game runs as.
+
+### Render scale
+
+The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed there and the game's own dynamic resolution is off; 100 % keeps the game's own. Lower can be lighter on the GPU but is blurrier; the HUD and text keep their sharpness. Only games the app can scale offer it.
 
 ### Upscaling
 
@@ -201,6 +214,10 @@ flowchart LR
 - **On** (the default for most games): an even 30 fps (or 20) in heavy scenes instead of a mix of 30 and 60.
 - **Off:** the game keeps aiming at 60; a late frame is shown one refresh later and the next one goes on as usual, so heavy scenes look less even but stay closer to 60 on average.
 - **When to change it:** turn it off if the game often falls to 30 fps although it is only slightly late.
+
+### Frame-rate counter
+
+Shows the frames per second at the top left.
 
 ### Performance HUD
 
