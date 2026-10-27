@@ -79,6 +79,7 @@ CUTS = {
     (0x37c140, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x37c1dc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x37c33c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11.4.0): the same node area cut. nninitStartup (main+0x2779d20) calls StandardAllocator::Initialize with virtual address memory
   # (a 20 MB heap; everything else in address regions), which aborted in its Initialize (sdk+0x2f98e4) before the first frame. The constructor is at sdk+0x34e038 (limit = alias start
   # + 0x3fe00000 at +0x10, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x34e0e4)

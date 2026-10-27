@@ -8,7 +8,6 @@
 # cannot tell the games that need them (Tears of the Kingdom) from those that only use what they answer (Wonder's conditional clears, Breath of the Wild's flushed textures).
 # Usage: profile_guess.py <ExeFS dir> <romfs_manifest.tsv | RomFS dir>   the facts and the guessed keys
 #        profile_guess.py --check [<NSP root>]                        every profile in dm/games against its extraction under <NSP root> (default /Volumes/T7/nsp): where the guess differs
-import struct
 import collections, os, re, struct, sys
 from pathlib import Path
 
