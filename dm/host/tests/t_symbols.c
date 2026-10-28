@@ -29,6 +29,7 @@ uint64_t guest_ns(void) { return 0; }
 int dm_mem_started(void) { return 0; }   // hle_svc.c: guest memory not laid out yet (loader.c dm_fps_state_apply)
 void guest_clock_read_wait(void) {}
 void hlecount_seal(void) {}
+int svc_nro_deactivate(module_t *m) { m->loaded = 0; return 1; }   // no memory mappings in this fixture
 void thr_svc_enter(uint64_t *r, uint64_t a) { (void)r; (void)a; }
 void thr_svc_leave(void) {}
 void dm_spin_wait(uint64_t r, uint64_t a) { (void)r; (void)a; }
