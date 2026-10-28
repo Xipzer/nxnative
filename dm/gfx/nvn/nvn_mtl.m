@@ -11108,21 +11108,28 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
        game slows, the pictures stay evenly spaced in content time instead of a generated one going up a refresh early and its game frame
        staying up long, which made characters jump, and nothing is held to a lower rate. */
     static int vpace = -1; if (vpace < 0) { const char *e = getenv("DM_MFX_PACE"); vpace = !(e && !strcmp(e, "0")); }
-    static double prev_tin, iv_ema; int vp_interp = -2;
+    static double prev_tin, iv_ema, lead_ema; int vp_interp = -2;
     if (vpace && mfx_on() && !mfx_gt_on()) {
-        double T = update.targetPresentationTimestamp;
+        double T = update.targetPresentationTimestamp, ld = T - CACurrentMediaTime();
+        if (ld > 0 && ld < 0.1) lead_ema = lead_ema > 0 ? 0.95 * lead_ema + 0.05 * ld : ld;   // how far ahead of its refresh the callback runs
         for (uint64_t j = first; j <= g_pq_in; j++) { double ti = g_pq[(j - 1) % PQ].t_in, pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
             if (pr > 0 && ti - pr > 0.004 && ti - pr < 0.1) iv_ema = iv_ema > 0 ? 0.9 * iv_ema + 0.1 * (ti - pr) : ti - pr; }
         // L: a generated picture's time is half an interval before its second game frame is ready, so it must be at least half an interval old,
         // plus the GPU's few ms. Simulated at 33-60 fps on 120 Hz ticks: the spread of display minus content time reaches the tick's own
         // (2.4 ms; the in-order pacing was 2.6-4.3 ms) at 18-25 ms of latency, against 18-20 ms in order
-        double L = 0.5 * (iv_ema > 0 ? iv_ema : 0.0167) + 0.006; if (L < 0.010) L = 0.010; if (L > 0.05) L = 0.05;
-        uint64_t pick = 0; int pick_i = -1;
+        // The callback for refresh T runs lead_ema before it (25-33 ms on an iPad Pro at 120 Hz), and a picture can only be taken once
+        // its frame is in the queue: L counts from the callback, or a game frame was always old enough at the first callback that saw it
+        // and its generated picture was never shown (iPad, BOTW at 51 fps: 51 pictures a second instead of 102)
+        double L = lead_ema + 0.5 * (iv_ema > 0 ? iv_ema : 0.0167) + 0.002; if (L < 0.010) L = 0.010; if (L > 0.08) L = 0.08;
+        uint64_t pick = 0, n_ok = 0; int pick_i = -1;
         for (uint64_t j = first; j <= g_pq_in; j++) {
             pq_item *q = &g_pq[(j - 1) % PQ]; double pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
-            if (q->interp >= 0 && !q->interp_shown && pr > 0 && (pr + q->t_in) / 2 + L <= T) { pick = j; pick_i = q->interp; }
-            if (q->t_in + L <= T) { pick = j; pick_i = -1; }
+            if (q->interp >= 0 && !q->interp_shown && pr > 0 && (pr + q->t_in) / 2 + L <= T) { pick = j; pick_i = q->interp; n_ok++; }
+            if (q->t_in + L <= T) { pick = j; pick_i = -1; n_ok++; }
         }
+        // a game frame whose generated picture is not up yet: that one first, the frame on the next refresh, unless the queue is behind
+        if (pick && pick_i < 0 && n_ok <= 2) { pq_item *q = &g_pq[(pick - 1) % PQ]; double pr = pick == first ? prev_tin : g_pq[(pick - 2) % PQ].t_in;
+            if (q->interp >= 0 && !q->interp_shown && pr > 0) pick_i = q->interp; }
         if (!pick) { pthread_mutex_unlock(&g_pq_mu); return; }   // nothing old enough: the picture on screen stays
         ticket = pick; vp_interp = pick_i;
     }
@@ -11157,7 +11164,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         if (last_ct > 0 && ct > last_ct) { double d = ct - last_ct; sd1 += d; sd2 += d * d; } last_ct = ct;
         s1 += e; s2 += e * e;
         if (++n == 600) { double m = s1 / n, sd = sqrt(fmax(s2 / n - m * m, 0)), dm = sd1 / n, dsd = sqrt(fmax(sd2 / n - dm * dm, 0));
-            MLOG("[mfx] pacing: %d pictures, display minus content time %.1f ms +- %.2f ms, content step %.2f ms +- %.2f ms, frame interval %.1f ms", n, m * 1e3, sd * 1e3, dm * 1e3, dsd * 1e3, iv_ema * 1e3);
+            MLOG("[mfx] pacing: %d pictures, display minus content time %.1f ms +- %.2f ms, content step %.2f ms +- %.2f ms, frame interval %.1f ms, callback lead %.1f ms", n, m * 1e3, sd * 1e3, dm * 1e3, dsd * 1e3, iv_ema * 1e3, lead_ema * 1e3);
             s1 = s2 = sd1 = sd2 = 0; n = 0; }
     }
     if (!submitted && interp < 0) {
