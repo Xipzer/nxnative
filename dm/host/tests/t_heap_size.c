@@ -35,6 +35,7 @@ void dm_guest_write_prepare(void *addr, size_t size) { (void)addr; (void)size; }
 uint64_t dm_mem_extra;   // loader.c: no render buffer pool grown by a render scale here
 // This fixture calls the SVC dispatcher directly, without rewritten guest gates.
 void gate_obs_set(int id, void (*fn)(uint64_t *, int)) { (void)id; (void)fn; }
+uint64_t dm_mem_extra;   // loader.c: no render buffer pool grown by a render scale here
 
 static size_t page, old_size, requested;
 static int calls, injected_error, last_prot;

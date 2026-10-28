@@ -33,18 +33,19 @@ int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_
 static void *alias_windows_thread(void *arg);
 int dm_mem_started(void) { return g_as != NULL; }   // loader.c: guest memory is laid out, its sizes are fixed
 static void *regions_thread(void *arg);
+int dm_mem_started(void) { return g_as != NULL; }   // loader.c: guest memory is laid out, its sizes are fixed
 static void mem_init_once(void) {
     extern uint64_t dm_mem_extra; g_mem_extra = dm_mem_extra;
-    size_t pg = (size_t)getpagesize(), alias = DM_GAME_MEM_ALIAS + g_mem_extra;
-    if (RESERVE < 0x10000000 || alias > RESERVE - 0x10000000 ||
-        DM_GAME_MEM_STACK > RESERVE - 0x10000000 - alias ||
-        ((RESERVE | alias | DM_GAME_MEM_STACK) & (pg - 1)))
+    size_t pg = (size_t)getpagesize(), alias0 = DM_GAME_MEM_ALIAS + g_mem_extra;   // the profile's alias region, with the room a larger render buffer pool needs
+    if (RESERVE < 0x10000000 || alias0 > RESERVE - 0x10000000 ||
+        DM_GAME_MEM_STACK > RESERVE - 0x10000000 - alias0 ||
+        ((RESERVE | alias0 | DM_GAME_MEM_STACK) & (pg - 1)))
         die("guest address-space profile has invalid native boundaries");
     // DM_ALIAS_SIZE=<bytes>: an alias region of that size instead of the profile's, the heap and stacks as they are; the block grows with it. A Switch-sized one (64 GB) holds what
     // a game reserves unchanged, for measuring its address regions on the Mac (the NSP script's heap check); an iPhone has no room for more than the profile's
-    const char *as = getenv("DM_ALIAS_SIZE");
+    size_t alias = alias0; const char *as = getenv("DM_ALIAS_SIZE");
     if (as && *as) { alias = (size_t)strtoull(as, NULL, 0); if (alias < 0x10000000 || (alias & (pg - 1))) die("DM_ALIAS_SIZE %s: at least 256 MB, in whole host pages", as); }
-    g_reserve = RESERVE - (DM_GAME_MEM_ALIAS + g_mem_extra) + alias;
+    g_reserve = RESERVE - alias0 + alias;
     g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (g_as == MAP_FAILED) die("reserve guest AS");
     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
@@ -53,7 +54,7 @@ static void mem_init_once(void) {
     //   and resource loading then MapPhysicalMemory's into the alias region after the node area on demand. With a 1.25 GB alias region only about 256 MB was left there, and 3 MB-class layout archives (WipeCourseIn / WipeWarp)
     //   got no address, were skipped, and crashed on a null pointer when used (main +0x373e04). So alias = node area + 1.75 GB + slack; the heap needs only 1.47 GB, and 2.625 GB is plenty.
     // The alias and stack sizes come from the game profile (mem_alias / mem_stack), the heap takes the rest; Mario: alias 0xB8000000, stack 0x10000000 → stack at +0xC8000000, heap at +0xD8000000
-    g_alias = g_as + 0x10000000; g_alias_cap = alias;   // with a larger render buffer pool's virtual range (g_mem_extra)
+    g_alias = g_as + 0x10000000; g_alias_cap = alias;   // with a larger render buffer pool, its virtual range lives here
     g_stack = g_alias + g_alias_cap; g_stack_cap = DM_GAME_MEM_STACK;
     g_heap  = g_stack + g_stack_cap; g_heap_cap  = g_reserve - (size_t)(g_heap - g_as);
     if (!(g_alias_bits = calloc((g_alias_cap >> 18) + 1, sizeof *g_alias_bits))) die("alias region page bitmap calloc");

@@ -42,6 +42,7 @@ int dm_ue_heap_owns(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; } // N
 uint64_t dm_mem_extra;   // loader.c: no render buffer pool grown by a render scale here
 // This fixture calls the SVC dispatcher directly, without rewritten guest gates.
 void gate_obs_set(int id, void (*fn)(uint64_t *, int)) { (void)id; (void)fn; }
+uint64_t dm_mem_extra;   // loader.c: no render buffer pool grown by a render scale here
 module_t *module_of(const void *p) {
     uintptr_t a = (uintptr_t)p;
     for (int i = 0; i < g_nmod; ++i) {

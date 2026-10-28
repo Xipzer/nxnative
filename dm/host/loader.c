@@ -233,24 +233,23 @@ static void install_fps_state(module_t *m) {
     dm_fps_state = m->base + m->fps_state_off; g_fps_m = m;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
-// The extra application memory a render scale needs, as dm_fps_state +0x58 below: the pool's growth plus 64 MB, taken
-// twice by the reservation (the alias region and the heap alike, hle_svc.c RESERVE)
+// DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs. The fields beyond +0x40 are written only for a build whose rewriter table names their stubs
+// What a factor adds to the application pool and the alias region (the pool's growth plus 64 MB, in 2 MB steps), 0 at 1.0
 static uint64_t render_pool_extra(uint64_t pool, float sc) {
     float sq = sc * sc; uint32_t k = (uint32_t)sq + (sq > (float)(uint32_t)sq);
     return k < 2 ? 0 : ((uint64_t)(k - 1) * pool + (64ull << 20) + 0x1fffff) & ~0x1fffffull;
 }
-// The highest render scale whose reservation still fits what this platform can reserve in one block
+// The highest factor whose reservation (hle_svc.c RESERVE = the profile's mem_reserve + 2 x the extra) fits one block on this platform
 static float render_pool_max(uint64_t pool) {
 #if TARGET_OS_OSX
-    (void)pool; return 3.0f;   // a Mac reserves what it needs
+    (void)pool; return 3.0f;
 #else
-    const uint64_t limit = 6ull << 30;   // iOS without com.apple.developer.kernel.extended-virtual-addressing
+    const uint64_t limit = 6ull << 30;   // iOS without com.apple.developer.kernel.extended-virtual-addressing (hle_svc.c: 6 GB succeeds, 7 GB fails)
     for (float sc = 3.0f; sc > 1.0f; sc -= 0.05f)
-        if (DM_GAME_MEM_RESERVE + 2 * render_pool_extra(pool, sc) <= limit) return sc;
+        if ((uint64_t)DM_GAME_MEM_RESERVE + 2 * render_pool_extra(pool, sc) <= limit) return sc;
     return 1.0f;
 #endif
 }
-    // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs. The fields beyond +0x40 are written only for a build whose rewriter table names their stubs
 void dm_fps_state_apply(void) {
     if (!dm_fps_state) return;
     const module_t *m = g_fps_m; const char *name = m->name;
