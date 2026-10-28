@@ -1648,12 +1648,6 @@ static int fps_present_cap(void) {
     }
     return g_present_cap;
 }
-// Variable frame step (a build whose rewriter table names VAR_STEP, DM_FPS_TARGET 61 to 240; loader.c dm_fps_var_cap): each frame steps the game by the real time the previous one
-// took, in 1/30 s units at state +0x50 (at least 1/240 s, at most the game's own longest step, 1.5; the build's stubs latch it once a game frame), and the frame is shown on the next
-// display-link tick. While the game fixes its own step (BotW's VFR override in cutscenes) or a prerendered movie halves the cap, the whole-vsync step holds as below
-__attribute__((weak)) int dm_fps_var_cap;   // loader.c; graphics unit tests have no loader
-static int vstep_on(void) { return dm_fps_var_cap && fps_step_cap() == 60 && !__atomic_load_n((uint32_t *)(dm_fps_state + 0x24), __ATOMIC_RELAXED); }
-int nvn_var_fps(void) { return dm_fps_state && vstep_on() ? dm_fps_var_cap : 0; }   // nvn_mtl.m: the display link runs at the cap while the variable step holds
 static nvn_fstep g_fs;   // present thread only
 static nvn_fgpu g_fg;   // the GPU time at kmin and at the current hold (nvn_fstep_gpu_slowed)
 static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)

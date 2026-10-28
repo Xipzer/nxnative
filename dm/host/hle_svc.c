@@ -33,7 +33,6 @@ int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_
 static void *alias_windows_thread(void *arg);
 int dm_mem_started(void) { return g_as != NULL; }   // loader.c: guest memory is laid out, its sizes are fixed
 static void *regions_thread(void *arg);
-int dm_mem_started(void) { return g_as != NULL; }   // loader.c: guest memory is laid out, its sizes are fixed
 static void mem_init_once(void) {
     extern uint64_t dm_mem_extra; g_mem_extra = dm_mem_extra;
     size_t pg = (size_t)getpagesize(), alias0 = DM_GAME_MEM_ALIAS + g_mem_extra;   // the profile's alias region, with the room a larger render buffer pool needs
