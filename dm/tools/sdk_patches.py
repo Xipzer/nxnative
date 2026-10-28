@@ -121,13 +121,6 @@ CUTS = {
     (0x37c1dc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x37c33c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
-  # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11.4.0): the same node area cut. nninitStartup (main+0x2779d20) calls StandardAllocator::Initialize with virtual address memory
-  # (a 20 MB heap; everything else in address regions), which aborted in its Initialize (sdk+0x2f98e4) before the first frame. The constructor is at sdk+0x34e038 (limit = alias start
-  # + 0x3fe00000 at +0x10, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x34e0e4)
-  'b39add63421be525d352e576dab438d3': [
-    (0x34e048, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
-    (0x34e0e4, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
-  ],
   # The Witcher 3: Wild Hunt - Complete Edition 4.04b (v262144, 0100E67012924000) sdk (SDK 15.3.0): the same node area cut. Its main reserves a 6 GB address region at start-up
   # (cut to 3 GB in its profile's patches.py) and commits pages into it with AllocateMemoryPages. The AddressRegionManager is at the offsets of Paper Mario's SDK 15.3.2 build:
   # the constructor at sdk+0x12e0e0, the node area limit at +0x12e0f0, its occupied length at +0x12e184
