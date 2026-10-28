@@ -5010,7 +5010,7 @@ static int mv_on(void) {
                  if (v && mfx_on()) MLOG("[mv] object motion vectors on (DM_MV=0 turns them off): G-buffer draws also write their previous position"); }
     return v && (mfx_on() || taau_on());
 }
-static struct { id<MTLTexture> depth, tex; uint64_t frame; int pass_on, draw, obj; uint64_t key; uint64_t n_draw, n_mv, n_prev; } g_mv;
+static struct { id<MTLTexture> depth, tex, late; uint64_t frame, late_frame; int late_pass, late_skip; int pass_on, draw, obj; uint64_t key; uint64_t n_draw, n_mv, n_prev; } g_mv;
 static _Atomic int g_mv_ok, g_mv_bad;
 /* The per-object store: two frames of uniform bytes, swapped at each new frame. An entry holds the bytes of every uniform block
    the draw's vertex shader reads, in binding order */
@@ -5259,13 +5259,28 @@ static void mv_bind_prev(id<MTLCommandEncoder> en, NvShader *sh, const uint64_t 
 /* A G-buffer pass (the depth the interpolator takes, every pass of the frame that renders into it): colour attachment 6 holds the
    previous positions, cleared to "no data" by the first such pass of the frame and loaded by the rest */
 static void mv_pass_setup(MTL4RenderPassDescriptor *pd) {
-    g_mv.pass_on = 0;
+    g_mv.pass_on = 0; g_mv.late_pass = 0;
     if (!mv_on()) return;
     id<MTLTexture> dt = pd.depthAttachment.texture, c0 = pd.colorAttachments[0].texture;
     if (!dt || !c0 || pd.colorAttachments[6].texture || dt.pixelFormat != MTLPixelFormatDepth32Float) return;
     int nc = 0; for (int i = 0; i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
-    if (nc < 3 || dt.width != c0.width || dt.height != c0.height) return;
     static uint64_t cleared_frame; uint64_t f = atomic_load(&g_cur_frame);
+    // Surfaces drawn after the G-buffer over its depth (water): their own motion, where they pass the depth test (DM_MV_LATE)
+    static int late = -1; if (late < 0) late = getenv("DM_MV_LATE") != NULL;
+    if (late && nc < 3 && dt == g_mv.depth && cleared_frame == f && g_mv.tex && dt.width == c0.width && dt.height == c0.height) {
+        if (!g_mv.late || g_mv.late.width != dt.width || g_mv.late.height != dt.height) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float width:dt.width height:dt.height mipmapped:NO];
+            td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            if (g_mv.late) res_remove(g_mv.late);
+            g_mv.late = [g_dev newTextureWithDescriptor:td]; g_mv.late.label = @"late surface motion (previous NDC)"; res_add(g_mv.late); res_commit(); g_mv.late_frame = 0;
+        }
+        MTLRenderPassColorAttachmentDescriptor *a = pd.colorAttachments[6];
+        a.texture = g_mv.late; a.storeAction = MTLStoreActionStore;
+        a.loadAction = g_mv.late_frame == f ? MTLLoadActionLoad : MTLLoadActionClear; a.clearColor = MTLClearColorMake(MV_NODATA, MV_NODATA, 0, 0);
+        g_mv.late_frame = f; g_pass.cfmt[6] = (uint32_t)MTLPixelFormatRG32Float; g_mv.pass_on = 1; g_mv.late_pass = 1;
+        mfx_note_latemv(g_mv.late); return;
+    }
+    if (nc < 3 || dt.width != c0.width || dt.height != c0.height) return;
     if (!g_mv.tex || g_mv.tex.width != dt.width || g_mv.tex.height != dt.height) {
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float width:dt.width height:dt.height mipmapped:NO];
         td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
@@ -6274,7 +6289,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     int ov = ms_fn != nil;
     if (!ov && !g_pso_lmap && g_mfx.role && g_pass.cfmt[7]) { ms_fn = fs_fn_mfx(fs, g_mfx.role); k.fsfn = ms_fn ? (__bridge void *)ms_fn : MFX_MASK_MARK; ov = 1; }
     g_mv.draw = 0;
-    if (!ov && !g_pso_lmap && g_mv.pass_on && fs && !pso_all_uint(&k, fs, 0) && !pso_mixed_uint(&k, fs, 0)) { id<MTLFunction> f = mv_pair(vs, fs); if (f) { ms_fn = f; k.fsfn = (__bridge void *)f; ov = 1; g_mv.draw = 1; } }
+    if (!ov && !g_pso_lmap && g_mv.pass_on && !g_mv.late_skip && fs && !pso_all_uint(&k, fs, 0) && !pso_mixed_uint(&k, fs, 0)) { id<MTLFunction> f = mv_pair(vs, fs); if (f) { ms_fn = f; k.fsfn = (__bridge void *)f; ov = 1; g_mv.draw = 1; } }
     // DM_PSO_PULL_ALL=1 (diagnostic): every draw that has a pulling pipeline draws with it, never with the pipeline for its layout
     { static int all = -1; if (all < 0) { const char *ev = getenv("DM_PSO_PULL_ALL"); all = ev && !strcmp(ev, "1"); if (all) MLOG("DM_PSO_PULL_ALL=1: every draw with a pulling pipeline draws with it (diagnostic)"); }
       if (all && !g_pso_lmap && !ov && hybrid_on()) { __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs); if (h) { g_pso_pull = 1; return h; } } }
@@ -9298,7 +9313,11 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int inst_obj = -1; if (inst_obj < 0) { const char *e = getenv("DM_TAAU_INSTOBJ"); inst_obj = e ? atoi(e) : 1; }
         { static int ev = -1; if (ev < 0) { const char *e = getenv("DM_MV_EVERY"); ev = e ? atoi(e) : 0; }
           g_mv.obj = ev ? (dw ? dw->instances : di->instances) <= 1 : !taau_on() || inst_obj || (dw ? dw->instances : di->instances) <= 1; }   // instanced draws may change instance order between frames: the camera's motion there
-        int ready = mv_pair(pr->sh[0], pr->sh[1]) != nil; if (ready != g_mv.draw) g_pso_dirty = 1;
+        int ready = mv_pair(pr->sh[0], pr->sh[1]) != nil;
+        // over the G-buffer's depth only surfaces tested against it (water): not full-screen passes, whose motion would replace the scene's
+        { int skip = g_mv.late_pass && !(S.ds.dt && (S.ds.df == NVN_DEPTH_FUNC_LESS || S.ds.df == NVN_DEPTH_FUNC_LEQUAL) && (dw ? dw->count : di->count) > 6);
+          if (skip != g_mv.late_skip) { g_mv.late_skip = skip; g_pso_dirty = 1; } if (skip) ready = 0; }
+        if (ready != g_mv.draw) g_pso_dirty = 1;
         g_mv.n_draw++; g_mv.n_mv += ready;
     } else if (g_mv.draw) { g_mv.draw = 0; g_pso_dirty = 1; }
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
@@ -11174,21 +11193,28 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
        game slows, the pictures stay evenly spaced in content time instead of a generated one going up a refresh early and its game frame
        staying up long, which made characters jump, and nothing is held to a lower rate. */
     static int vpace = -1; if (vpace < 0) { const char *e = getenv("DM_MFX_PACE"); vpace = !(e && !strcmp(e, "0")); }
-    static double prev_tin, iv_ema; int vp_interp = -2;
+    static double prev_tin, iv_ema, lead_ema; int vp_interp = -2;
     if (vpace && mfx_on() && !mfx_gt_on()) {
-        double T = update.targetPresentationTimestamp;
+        double T = update.targetPresentationTimestamp, ld = T - CACurrentMediaTime();
+        if (ld > 0 && ld < 0.1) lead_ema = lead_ema > 0 ? 0.95 * lead_ema + 0.05 * ld : ld;   // how far ahead of its refresh the callback runs
         for (uint64_t j = first; j <= g_pq_in; j++) { double ti = g_pq[(j - 1) % PQ].t_in, pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
             if (pr > 0 && ti - pr > 0.004 && ti - pr < 0.1) iv_ema = iv_ema > 0 ? 0.9 * iv_ema + 0.1 * (ti - pr) : ti - pr; }
         // L: a generated picture's time is half an interval before its second game frame is ready, so it must be at least half an interval old,
         // plus the GPU's few ms. Simulated at 33-60 fps on 120 Hz ticks: the spread of display minus content time reaches the tick's own
         // (2.4 ms; the in-order pacing was 2.6-4.3 ms) at 18-25 ms of latency, against 18-20 ms in order
-        double L = 0.5 * (iv_ema > 0 ? iv_ema : 0.0167) + 0.006; if (L < 0.010) L = 0.010; if (L > 0.05) L = 0.05;
-        uint64_t pick = 0; int pick_i = -1;
+        // The callback for refresh T runs lead_ema before it (25-33 ms on an iPad Pro at 120 Hz), and a picture can only be taken once
+        // its frame is in the queue: L counts from the callback, or a game frame was always old enough at the first callback that saw it
+        // and its generated picture was never shown (iPad, BOTW at 51 fps: 51 pictures a second instead of 102)
+        double L = lead_ema + 0.5 * (iv_ema > 0 ? iv_ema : 0.0167) + 0.002; if (L < 0.010) L = 0.010; if (L > 0.08) L = 0.08;
+        uint64_t pick = 0, n_ok = 0; int pick_i = -1;
         for (uint64_t j = first; j <= g_pq_in; j++) {
             pq_item *q = &g_pq[(j - 1) % PQ]; double pr = j == first ? prev_tin : g_pq[(j - 2) % PQ].t_in;
-            if (q->interp >= 0 && !q->interp_shown && pr > 0 && (pr + q->t_in) / 2 + L <= T) { pick = j; pick_i = q->interp; }
-            if (q->t_in + L <= T) { pick = j; pick_i = -1; }
+            if (q->interp >= 0 && !q->interp_shown && pr > 0 && (pr + q->t_in) / 2 + L <= T) { pick = j; pick_i = q->interp; n_ok++; }
+            if (q->t_in + L <= T) { pick = j; pick_i = -1; n_ok++; }
         }
+        // a game frame whose generated picture is not up yet: that one first, the frame on the next refresh, unless the queue is behind
+        if (pick && pick_i < 0 && n_ok <= 2) { pq_item *q = &g_pq[(pick - 1) % PQ]; double pr = pick == first ? prev_tin : g_pq[(pick - 2) % PQ].t_in;
+            if (q->interp >= 0 && !q->interp_shown && pr > 0) pick_i = q->interp; }
         if (!pick) { pthread_mutex_unlock(&g_pq_mu); return; }   // nothing old enough: the picture on screen stays
         ticket = pick; vp_interp = pick_i;
     }
@@ -11223,7 +11249,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         if (last_ct > 0 && ct > last_ct) { double d = ct - last_ct; sd1 += d; sd2 += d * d; } last_ct = ct;
         s1 += e; s2 += e * e;
         if (++n == 600) { double m = s1 / n, sd = sqrt(fmax(s2 / n - m * m, 0)), dm = sd1 / n, dsd = sqrt(fmax(sd2 / n - dm * dm, 0));
-            MLOG("[mfx] pacing: %d pictures, display minus content time %.1f ms +- %.2f ms, content step %.2f ms +- %.2f ms, frame interval %.1f ms", n, m * 1e3, sd * 1e3, dm * 1e3, dsd * 1e3, iv_ema * 1e3);
+            MLOG("[mfx] pacing: %d pictures, display minus content time %.1f ms +- %.2f ms, content step %.2f ms +- %.2f ms, frame interval %.1f ms, callback lead %.1f ms", n, m * 1e3, sd * 1e3, dm * 1e3, dsd * 1e3, iv_ema * 1e3, lead_ema * 1e3);
             s1 = s2 = sd1 = sd2 = 0; n = 0; }
     }
     if (!submitted && interp < 0) {
@@ -11495,12 +11521,13 @@ static id<MTL4CommandAllocator> g_mfx_alloc[3]; static id<MTL4CommandBuffer> g_m
    usual, is the truth for the generated one. Every 60th frame the generated one is saved (mfx_gt_dump); the true one is DM_NVN_SHOT's.
    Generated frames are not shown */
 static int mfx_gt_span(void) { return mfx_gt_on() ? 2 : 1; }
+static uint64_t gt_every(void) { static uint64_t v; if (!v) { const char *e = getenv("DM_MFX_GT_EVERY"); v = e ? (uint64_t)atoi(e) : 60; if (v < 2 || (v & 1)) v = 60; } return v; }   // DM_MFX_GT_EVERY: even number of presents between samples
 static int mfx_present_frame(const tex_t *t, double period) { @autoreleasepool {
     mfx_note_swap(t);
     static uint64_t gt_n; static id<MTLTexture> gt_tex;   // presents counted here, so the truth and the generated frame name the same frame
     if (mfx_gt_on() && (++gt_n & 1)) {   // the true middle frame: shown, not interpolated; every 60th copied for the comparison
         id<MTLTexture> src = t ? present_raw_src(tex_mtl(t)) : nil; int b = -1; for (int i = 0; i < 3 && b < 0; i++) if (!atomic_load(&g_mfx_busy[i])) b = i;
-        if (src && b >= 0 && gt_n % 60 == 59) {
+        if (src && b >= 0 && gt_n % gt_every() == gt_every() - 1) {
             if (!gt_tex || gt_tex.width != src.width || gt_tex.height != src.height || gt_tex.pixelFormat != src.pixelFormat) {
                 MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
                 td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageShaderRead; gt_tex = [g_dev newTextureWithDescriptor:td]; res_add(gt_tex); res_commit(); }
@@ -11541,6 +11568,7 @@ static int mfx_present_frame(const tex_t *t, double period) { @autoreleasepool {
         mfx_history_reset();
     }
     if (g_mfx.scene_done) g_mfx.prev_scene_canvas = g_mfx.scene_canvas;
+    if (mfx_gt_on() && getenv("DM_MV_LATE_AB")) mfx_late_ab((int)((gt_n / gt_every()) & 1));   // A/B: late surface motion on every other sample
     int slot = mfx_frame_prepare(period);
     NSArray *keep = nil;
     if (slot >= 0) {
@@ -11560,7 +11588,7 @@ static int mfx_present_frame(const tex_t *t, double period) { @autoreleasepool {
             atomic_store(busy, 0); }];
         pthread_mutex_lock(&g_res_mu); [g_q4 commit:&cb count:1 options:o]; pthread_mutex_unlock(&g_res_mu);
         mfx_mv_log();   // DM_MFX_MVLOG (diagnostic)
-        if (keep && mfx_gt_on() && gt_n % 60 == 0) { while (atomic_load(&g_mfx_busy[a])) usleep(200); mfx_gt_dump((long)gt_n, getenv("DM_MFX_GT")); }
+        if (keep && mfx_gt_on() && gt_n % gt_every() == 0) { while (atomic_load(&g_mfx_busy[a])) usleep(200); mfx_gt_dump((long)gt_n, getenv("DM_MFX_GT")); }
         if (keep && mfx_dump_due()) { while (atomic_load(&g_mfx_busy[a])) usleep(200); mfx_dump((long)atomic_load(&g_cur_frame), nil, nil); }   // DM_MFX_DUMP (diagnostic): waits for the GPU
     }
     g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = g_mfx.ready = 0; g_mfx.canvas_tex = nil;
