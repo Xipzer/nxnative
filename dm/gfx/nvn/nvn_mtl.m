@@ -11140,10 +11140,21 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     // Frame interpolation: a frame with an interpolated one goes up in two ticks, the interpolated frame first; the frame stays the next to take until its own goes up.
     // A frame whose interpolated picture is up is never dropped (its own picture next, whatever is queued behind it), and while the queue catches up (three or more
     // waiting) no interpolated picture is shown: taking the newer frames' interpolated pictures instead dropped nearly every game frame once the queue stayed that deep
+    static int g_trim_standing; if (g_pq_in == first) g_trim_standing = 0;   // one frame waiting: no standing queue
     pq_item *fp = &g_pq[(first - 1) % PQ]; int behind = 0;
     if (vp_interp != -2) {}
     else if (fp->interp >= 0 && fp->interp_shown) ticket = first;
-    else if (fifo && ticket > first) { behind = ticket - first >= 2; ticket = behind ? g_pq_in - 1 : first; }
+    else if (fifo && ticket > first) {
+        // A frame waiting behind the one taken at every tick for a second is a standing queue, not jitter: the game keeps up, so
+        // every frame waits a whole refresh more than it needs (iPad, BOTW at 60: 59 ms from present to screen, 33 of it the
+        // link's lead). Take the newer one once; the queue stays one shorter while the game keeps up (DM_PRESENT_TRIM=0: off)
+        static int trim = -1; static uint64_t trims; if (trim < 0) { const char *e = getenv("DM_PRESENT_TRIM"); trim = !(e && !strcmp(e, "0")); }
+        behind = ticket - first >= 2; int trimmed = 0;
+        if (behind) g_trim_standing = 0;
+        else if (trim && ++g_trim_standing >= 60) { g_trim_standing = 0; trimmed = 1;
+            if (++trims <= 4 || trims % 100 == 0) MLOG("display link: a frame waited behind every tick for 60 ticks; one dropped to shorten the queue (%llu so far)", (unsigned long long)trims); }
+        ticket = trimmed ? g_pq_in : behind ? g_pq_in - 1 : first; behind |= trimmed;
+    }
     pq_item *ip = &g_pq[(ticket - 1) % PQ]; int interp = vp_interp != -2 ? vp_interp : !behind && ip->interp >= 0 && !ip->interp_shown ? ip->interp : -1;
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = update.targetPresentationTimestamp; }
     pq_item it = *ip; g_link_it_tin = it.t_in;
