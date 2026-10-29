@@ -6,6 +6,30 @@ struct Setting: Decodable, Identifiable {
     let env, kind, label, note, def: String
     let section: String?   // heading on the settings screen; absent in older bundles
     let needs: String?     // "<VAR>=<value>": a sub-setting, drawn only while that setting has that value
+    let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
+    let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
+    struct Base: Decodable { let docked, handheld: [Int] }
+    let options: [[String]]?   // choice: [value, label]
+    let min, max, step: Double?   // range
+    let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
+    var id: String { env }
+    var sectionTitle: String { section ?? "Game" }
+    var basic: Bool { level == "basic" }
+    var onValue: String { on ?? "1" }
+    var offValue: String { off ?? "0" }
+    func isDefault(_ v: String) -> Bool {   // a range compares as numbers (a slider writes 1.00 for 1.0)
+        kind == "range" ? abs((Double(v) ?? .nan) - (Double(def) ?? .nan)) < 1e-6 : v == def
+    }
+    func accepts(_ v: String) -> Bool {   // a saved choice the game still offers
+        switch kind {
+        case "choice": return options?.contains { $0[0] == v } ?? false
+        case "range":
+            guard !v.contains(where: { $0 == "x" || $0 == "X" }), let n = Double(v), n.isFinite, let lo = min, let hi = max else { return false }   // no hex: launcher.c's check agrees
+            return n >= lo && n <= hi
+        case "toggle": return v == onValue || v == offValue
+        default: return true
+        }
+    }
     enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
