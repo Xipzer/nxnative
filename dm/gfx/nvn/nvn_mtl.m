@@ -6159,6 +6159,7 @@ static void taau_resolve(void) {
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [ce endEncoding];
     g_ta.swap_from = scene; g_args_dirty[1] = 1;
     static uint64_t n; if (++n <= 2 || n % 600 == 0) MLOG("[taau] resolved %llu frames (jitter %.3f %.3f px)", (unsigned long long)n, g_ta.jx, g_ta.jy);
+}
 // NVN's alpha test (ColorStateSetAlphaTest and SetAlphaRef; Maxwell's fixed-function test of the alpha a pixel shader writes to colour 0, before blending): Metal has none.
 // A pipeline drawn with an alpha function other than ALWAYS takes its fragment from the shader's alpha test library <key>_ba (dmsh_alpha.py: the same entry points, comparing
 // colour 0's alpha with the function and reference at fragment buffer DMSH_ALPHA_BUFFER before each return), and its draws bind them there (at_bind). The function and the
