@@ -79,7 +79,15 @@ DM_MEMSTAT_DUMP	diagnostic	`=<seconds>`: with `DM_MEMSTAT`, at that second write
 DM_MEM_CAP_GB	switch	`=<GB>`: the memory watchdog exits when resident memory exceeds that many GB (default 24 on the Mac, none on iOS; `0` turns it off)
 DM_METAL_CAPTURE	diagnostic	`=1` makes `build_ipa.sh` produce a build that can write GPU frame captures (`MetalCaptureEnabled` in `Info.plist`), for `DM_GPU_CAPTURE`
 DM_METAL_HUD	player	`1` shows Apple's Metal performance HUD over the game (frame rate, frame and GPU time, memory)
+DM_MFX_DUMP	diagnostic	`=<dir>` (frame interpolation): while the camera turns, saves the scene pair, depth, motion vectors and generated frame of a few frames as raw files
+DM_MFX_FI_CACHE	diagnostic	`0` makes a new MetalFX frame interpolator at every size change instead of keeping the last few
+DM_MFX_GT	diagnostic	`=<dir>` (test): interpolates every second game frame from the frames two apart and saves the generated frame and the real one between them, for scoring
+DM_MFX_GT_EVERY	diagnostic	`=<n>` (even): presents between `DM_MFX_GT` samples (default 60)
 DM_MFX_INTERP	player	`interp30` shows a game at 30 fps as 60 with MetalFX frame interpolation; `interp` half the screen rate shown at full; `interpmax` every game frame interpolated; `0` (the default) is off. Breath of the Wild only
+DM_MFX_MSL_DIR	path	Folder of the shader MSL frame interpolation reads to make its UI and motion variants; default the build's shader cache (Mac) or `Documents/mfx_msl` (iOS)
+DM_MFX_MVLOG	diagnostic	`=<n>`: every n interpolated frames, logs the median motion vector and the camera step (waits for the GPU)
+DM_MFX_PACE	diagnostic	`0` paces frame interpolation in order, one picture per refresh, instead of by content time
+DM_MFX_YFLIP	diagnostic	`-1` tries the other clip-space y convention in the interpolator's camera motion
 DM_MOTION	switch	`0` ignores live motion: every six-axis sensor lies flat as before (a shake still plays), and neither controllers' motion sensors nor the phone's device motion are switched on (`hle_hid.c`, `motion_apple.h`, `DmGamepad.m`); the NSP script's `--no-motion` (`MOTION = False`) builds it in
 DM_MOTION_ACC_SIGN	switch	`-1` flips only GameController's acceleration, for a source that reports the specific force (+1 G up at rest) instead of the gravity direction (`motion_fusion.h`); phone and raw HID samples are already in the Switch frame
 DM_MOTION_AXES	switch	`=<map>` such as `x,-z,y`: maps Apple's controller axes to the Switch's, a signed permutation applied to acceleration and rotation alike, for a controller whose axes differ (default `x,y,z`; phone and raw HID samples are already in the Switch frame)
@@ -88,6 +96,12 @@ DM_MOTION_HID	switch	On the Mac, `0` disables the passive Switch Pro Controller 
 DM_MOTION_LOG	diagnostic	`=1` logs player 1's mapped motion sample once a second per source (phone / GameController / controller HID; acceleration in G, gyro in revolutions/s), for checking the axes: flat and still reads acc 0 0 -1
 DM_MOVIE_TRACE	diagnostic	When set, the movie decoder logs every call with its thread and decoder (by default the first 12 calls, then every 2^k-th)
 DM_MSL_DIR	path	Parent folder of the shader libraries: NVN loads from `b-<chain version>/` beneath it, Vulkan from `vk/`, GL from `gl/`; the app and the Mac launcher set it
+DM_MV	diagnostic	`0` turns object motion vectors off for frame interpolation (camera motion only)
+DM_MV_DUMP	diagnostic	`=<dir>`: saves the object motion target of a few frames as raw files
+DM_MV_EVERY	diagnostic	`1` takes object motion wherever a draw wrote it, not only where the camera cannot explain the pixel
+DM_MV_LATE	diagnostic	`1` (test): surfaces drawn over the G-buffer depth (water) write their own motion into a second layer
+DM_MV_LATE_AB	diagnostic	`1` (test, with `DM_MFX_GT`): late surface motion on every other sample, for an in-run A/B
+DM_MV_LATE_DUMP	diagnostic	`1` (test, with `DM_MFX_GT`): saves the late surface motion layer beside each generated frame
 DM_NICK	switch	The account nickname the game sees (default `Player`)
 DM_NRO	switch	`0` turns off loading of the NRO modules the game's NRR files register (on by default): every `nn::ro::LoadModule` then fails
 DM_NVN_ALLOCPROF	diagnostic	`=1` charges Metal allocation growth to each replayed op type and function, and logs command allocator sizes and each new texture (serial, size, format, storage)
@@ -211,6 +225,7 @@ DM_PRESENT_INTERVAL	switch	`display` presents one frame per display-link tick wh
 DM_PRESENT_LATENCY	switch	`=1` or `2`: overrides the display link's preferred frame latency for every screen and window mode; larger positive values use 2 (default 2 in variable-refresh fullscreen, 1 otherwise)
 DM_PRESENT_LINK	switch	Present pacing: `0` acquires the drawable itself, `1` (the default) presents on a 60 Hz display link, `2` uses a 120 Hz display link with a frame every other tick
 DM_PRESENT_SNAP	player	`=<n>`: present snapshots, a ring of n host textures (2 to 4; `1` = 2) the presents are copied to so the game's swapchain texture is free at once; `0` off (default: the profile's `present_snap`)
+DM_PRESENT_TRIM	diagnostic	`0` keeps a standing present queue; by default a frame that waited behind the one taken at every tick for 60 ticks is dropped once
 DM_PRESENT_UPSCALE	player	`metalfx` scales a picture smaller than its rectangle on the screen through MetalFX's spatial scaler; `off` (the default) scales it bilinearly
 DM_PRESENT_UPSCALE_OUT	player	`=1.0`..`4.0` makes `DM_PRESENT_UPSCALE=metalfx` reconstruct at that share of the viewport, which the present then averages back down (supersampling); `1.0` (the default) reconstructs at the viewport
 DM_PROBE	diagnostic	`=module:offset,…` (Mac only): puts a `brk` at each guest address and on every hit prints the thread, registers, strings they point to and a backtrace, then runs the original instruction
@@ -290,6 +305,14 @@ DM_SPIN_LIST	diagnostic	`=1` makes `patch_nso.py` print every guest poll loop it
 DM_SPIN_POLL	switch	`=<µs>`: how long a spin-gate wait polls before it sleeps with the yield back-off (default 2000; `0` yields on every pass)
 DM_SVC	diagnostic	`=1` logs memory SVCs (`SetHeapSize`, `MapMemory`, `Map`/`UnmapPhysicalMemory`) with their addresses and sizes
 DM_SYMCHECK	diagnostic	`=1` checks every hashed module symbol lookup against a linear search and logs a red line for each mismatch
+DM_TAAU	diagnostic	`1` (experimental): temporal upscaling of Breath of the Wild's scene through MetalFX's temporal scaler with a jittered G-buffer
+DM_TAAU_DREV	diagnostic	`1` tells the temporal scaler the depth is reversed
+DM_TAAU_INSTOBJ	diagnostic	`0` leaves instanced draws out of the object motion temporal upscaling uses
+DM_TAAU_JOFF	diagnostic	`=<f>`: sign and scale of the jitter offset handed to the temporal scaler (default 1)
+DM_TAAU_JSCALE	diagnostic	`=<f>`: size of the projection jitter in pixels (default 1)
+DM_TAAU_JSIGN	diagnostic	`-1` flips the projection jitter's sign
+DM_TAAU_LOD	diagnostic	`=<f>`: texture LOD bias while temporal upscaling renders below the output size
+DM_TAAU_MVLOG	diagnostic	`=<n>`: logs the temporal scaler's motion vectors every n frames
 DM_TBUF_ALIGN	diagnostic	`=<bytes>` uses that value as the linear-texture alignment for buffer textures when it is larger than the device's `minimumLinearTextureAlignmentForPixelFormat`: a Mac can then reproduce a phone's larger alignment (a 64-byte one fails the buffers a device with 64 bytes cannot view), to check `tbuf_as_2d`'s aligned-row copy
 DM_TEAM_ID	switch	Apple team ID for the per-game Xcode project, used when `--team-id` / `TEAM_ID` is not given; `build_ipa.sh` uses the placeholder `0000000000` (unsigned) when unset
 DM_TEMP	path	Temporary storage folder (default `$DM_ROOT/run/platform/temp`); stand-in system data goes in `<DM_TEMP>_sysdata`; the Mac launcher, the iOS app and the NSP script set it

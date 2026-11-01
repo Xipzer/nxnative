@@ -15,6 +15,7 @@ int hle_implements(const char *name) { (void)name; return 0; }
 int svc_nro_deactivate(module_t *m) { m->loaded = 0; return 1; }
 
 static _Alignas(0x4000) uint8_t image[0xc000];
+int dm_mem_started(void) { return 0; }   // hle_svc.c: guest memory not laid out yet (loader.c dm_fps_state_apply)
 static module_t module;
 static const char *verified = "cd57b23fa4bbad65803d9788c01821ee";
 
@@ -92,7 +93,7 @@ static void layout(void) {
     read_layout(&module, dir);
     assert(module.camera_aspect && module.fps_state_off == 0x8000 && !strcmp(module.build_id, verified));
     unlink(path); rmdir(dir);
-    module.size = 0x8048; install_fps_state(&module); // exact required extent is valid
+    module.size = 0x8068; install_fps_state(&module); // exact required extent is valid
     pid_t child = fork(); assert(child >= 0);
     if (!child) {
         struct rlimit lim = {0, 0}; setrlimit(RLIMIT_CORE, &lim);

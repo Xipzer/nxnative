@@ -41,7 +41,7 @@ class CameraWriter(unittest.TestCase):
         self.cursor = self.area
         self.original = b''
         ctx = types.SimpleNamespace(here=lambda: self.cursor, emit=self.emit, site=self.check_site,
-                                    put=self.put, state=self.state, render_scale=0)
+                                    put=self.put, state=self.state, render_scale=0, keys={})
         # Exercise the registry's full entry, not a separate test implementation.
         patch.FRAME_STEP['cd57b23fa4bbad65803d9788c01821ee'](ctx)
         self.assertEqual(len(self.original), 13 * 4)
