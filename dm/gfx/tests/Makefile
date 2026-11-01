@@ -86,6 +86,7 @@ t_pace: t_pace.c ../nvn/nvn_pace.h
 t_timestamp: t_timestamp.c ../nvn/nvn_timestamp.h
 	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror -o $@ $<
 t_poolpeak: t_poolpeak.c ../nvn/nvn_poolpeak.h
+t_aspect: t_aspect.c ../nvn/nvn_aspect.h
 	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror -o $@ $<
 t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
