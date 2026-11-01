@@ -7,6 +7,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
+- [TV](#tv)
 - [Settings in a file](#settings-in-a-file)
 
 ## Tested defaults
@@ -194,7 +195,7 @@ At start, before the game's first frame, the app prepares what it already knows:
 
 ### Pipeline prebuild
 
-Builds a stand-in for every pair of shaders the game has (15,767 for Breath of the Wild) and puts them into the pipeline archive, so that a scene you have never seen has a stand-in for each of its draws instead of a stutter. It runs before the game's first frame, behind a **Preparing pipelines** screen: the first start waits a few minutes for it, once, and so does the first start after a game update or an app update that brings new shaders. Every other start skips it. It needs Metal 4 pipelines.
+Builds a stand-in for every pair of shaders the game has (15,767 for Breath of the Wild) and puts them into the pipeline archive, so that a scene you have never seen has a stand-in for each of its draws instead of a stutter. It runs before the game's first frame, behind a **Preparing pipelines** screen: the first start waits a few minutes for it, once, and so does the first start after a game update or an app update that brings new shaders. Every other start skips it. It needs Metal 4 pipelines, and its row shows only while that option is on.
 
 Built in the background while playing instead, the stand-ins took an iPhone 17 Pro Max's GPU from about 13 to 15–18 ms a frame in Breath of the Wild, so the app does the work up front.
 
@@ -253,26 +254,23 @@ Turn off **Show this window at launch** to start the game at once with your choi
 
 **Window** or **Fullscreen**: how the game's window opens. ⌃⌘F or the green button changes it while you play. In an `env.txt`: `DM_FULLSCREEN=1` or `0`.
 
-## Save sync
+### Cloud saves folder
 
-**Sync folder** carries this game's save between devices through a folder they share in iCloud Drive, `nxnative-saves`. The Mac app uses it by itself when iCloud Drive is on; on the iPhone you pick it once. To set it up:
+**Choose a folder…** picks the iCloud Drive folder the game's save is synced through, the one the iPhone app chose in its launcher's **Cloud saves**, or the game's own folder inside it, named after its title ID ([Cloud saves](#cloud-saves)); **Turn off** stops it. Off by default. macOS may ask once whether the app may open iCloud Drive; if the game log says `this app may not open iCloud Drive`, allow it in System Settings › Privacy & Security › Files and Folders. In an `env.txt`: `DM_SAVE_SYNC=<folder>`, or `DM_SAVE_SYNC=icloud` for iCloud Drive › nxnative Saves; the window then shows it fixed.
 
-1. **Make the folder.** Open the game's Mac app once: it creates `nxnative-saves` in iCloud Drive (iCloud Drive must be on in System Settings → Apple Account → iCloud). Without a Mac, create the folder in the Files app under iCloud Drive, or with the new-folder button in the picker of step 2.
-2. **Pick it on the iPhone.** On the settings screen, tap **Sync folder**, go to **iCloud Drive**, tap **nxnative-saves** to go inside it, then tap **Open**. In LiveContainer, turn on the app's **Fix File Picker** setting first: without it **Open** stays disabled.
-3. **Start the game** on the device that has the save you want. Its save goes to the folder, and the other device takes it at its next start. If both devices already have saves of their own, the first sync asks which one to keep.
-4. **Switch devices by quitting the game.** The save is taken only when the game starts: on the iPhone, swipe the app away in the app switcher and open it again. A game left running in the background keeps the save it started with.
+## Cloud saves
 
-The game keeps each save in the folder as `<title ID>/save.nxsave`. For another folder on the Mac, or none, add a line to its `env.txt` (`~/Library/Application Support/nxnative/<title ID>/env.txt`): `DM_SAVE_SYNC=<folder>`, or `DM_SAVE_SYNC=` (empty) to turn it off.
+The Mac app and the iPhone app of one game can share a save through iCloud Drive. Choose the same iCloud Drive folder on both: **Cloud saves** › **Choose a folder…** in the Mac settings window, and **Cloud saves** in the iPhone launcher (any folder, for instance one named **nxnative Saves**). Each game keeps one file there, `<title ID>/save.dmsync`, which holds the whole save.
 
-- **When the game starts,** it brings the save up to date before loading it: if only the folder changed since this device last synced, the folder's save replaces this device's. If only this device changed, this device's save goes to the folder.
-- **After each save,** the game sends the save to the folder in the background.
-- **When both changed** (you played on both devices without the game syncing in between), the game asks which save to keep. The one you do not keep goes to the backups. **Not now** leaves both as they are and syncs nothing until the next start, when it asks again.
-- **When another device saves while you play,** the game stops sending saves and tells you. Your progress stays on this device, and the next start asks which save to keep.
-- **When the folder cannot be reached** (no network, iCloud still downloading), the game says so and plays on this device's save. Syncing resumes at the next start.
+When the game starts, it brings the save from iCloud Drive in if that one is the one to keep; a few seconds after the game saves, it sends its save. The iPhone app also sends when it goes to the background, and the Mac app once the game has quit. If you played on both without the save getting across in between, the newer save wins.
 
-Play on one device at a time, and give iCloud a moment to upload before switching. Whatever a sync replaces on this device is kept first: the last 10 versions are in `save.sync/backup/` next to `save/` (in the Files app, under the app's name). `dm/tools/nxsave.py <backup> <new folder>` unpacks one on a Mac; copy its contents over `save/` with the app closed to restore it.
+A save that is replaced, on the device or in iCloud Drive, is kept first, beside the save in a folder named after it with `-backups` (on the iPhone `save-backups` in the Files app, under the app's name; on the Mac `~/Library/Application Support/nxnative/<title ID>/save-backups`): `<date> local` holds this device's save, `<date> cloud` the one that was in iCloud Drive. The newest 10 of each kind stay, and older ones are removed; other folders you put there are left alone.
 
-`DM_SAVE_SYNC_RESOLVE=local` or `=cloud` in `env.txt` answers the question without asking. Remove it afterwards, or it decides every later conflict the same way.
+iCloud Drive takes a moment to carry a file from one device to the other. Quit the game on one device and give it a few seconds before you start it on the other. Without a connection the game plays on with the save it has and sends it later. The game log says what came in and what went out (lines starting with `save sync:`).
+
+## TV
+
+Connect a TV or monitor by cable, or start Screen Mirroring to an Apple TV or AirPlay TV. The game fills it in 16:9 at up to 1080p and switches to **Docked**; the iPhone or iPad keeps the controls. Disconnect to bring the game back to the device in its earlier mode. AirPlay adds some delay; a cable has almost none.
 
 ## Settings in a file
 
@@ -285,6 +283,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
 | Game language | `DM_LANG` | a language code, such as `ja` |
 | Display mode (Mac) | `DM_FULLSCREEN` | `1` fullscreen, `0` a window |
+| Cloud saves folder (Mac) | `DM_SAVE_SYNC` | a folder; `icloud`: iCloud Drive › nxnative Saves; `0`: off |
 | Frame-rate counter | `DM_SHOW_FPS` | `1`, `0` |
 | Touch feedback | `DM_TOUCH_HAPTICS` | `1`, `0` |
 | Game rumble | `DM_RUMBLE` | `1`, `0` |

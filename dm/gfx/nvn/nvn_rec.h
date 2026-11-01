@@ -82,7 +82,7 @@ static inline int rec_on(void) {
 #if TARGET_OS_IPHONE
     g_rec = !e || atoi(e) > 0;
 #else
-    g_rec = e && atoi(e) > 0;
+    g_rec = e ? atoi(e) > 0 : DM_GAME_ENC_THREAD;   // the profile's enc_thread: Need for Speed: Hot Pursuit Remastered waits on its fence each frame, so encoding on its thread took its 60 fps frame from 18.1 to 16.7 ms
 #endif
     // Frame interpolation (DM_MFX_INTERP, nvn_mfx.m) encodes at the present on the submit thread and does not run with
     // the encode thread: with both on, it skipped every frame and logged it once. A player who picked frame generation

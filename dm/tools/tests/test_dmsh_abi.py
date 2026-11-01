@@ -16,14 +16,17 @@ sys.path.insert(0, str(REPO / 'dm/gfx/tools'))
 import dmsh_abi as abi   # noqa: E402
 
 # Literals of the ABI still written in each file (outside comments), counted as the ratchet below does: the value, or the kind string (repr). These stay for other reasons:
-# a json key spelled like a kind ('c1', 'geometry', 'tex', 'img' in the facts and reflection json), an NVN stage name ("geometry"), a "?" placeholder in a log line.
+# a json key spelled like a kind ('c1', 'geometry', 'tex', 'img' in the facts and reflection json), an NVN stage name ("geometry"), a "?" placeholder in a log line, and 0x100
+# where it is not the push constant block's size (DMSH_PUSH_SIZE): a viewport swizzle value in nvn_mtl.m, the start of compute code in a package record in dmsh_build.py,
+# a single texture bind record's flag bit in nvn_obj.h (BIND_TEX1_NOBASE).
+# 0x1000 where it is not the pool table's entry count (DMSH_GMEM_MAP_ENTRIES): the 4 KB page step of nvn_mtl.m's sparse residency map.
 # A count may only go down; when it does, lower it here.
 BASELINE = {
-    'dm/gfx/nvn/nvn_mtl.m': {"'?'": 2, "'geometry'": 3},
+    'dm/gfx/nvn/nvn_mtl.m': {"'?'": 2, "'geometry'": 3, '0x100': 2, '0x1000': 2},
     'dm/gfx/nvn/nvn_refl.m': {"'c1'": 1},
     'dm/gfx/nvn/nvn_refl.h': {},
-    'dm/gfx/nvn/nvn_obj.h': {},
-    'dm/gfx/tools/dmsh_build.py': {"'c1'": 4, "'geometry'": 3, "'img'": 1, "'tex'": 1},
+    'dm/gfx/nvn/nvn_obj.h': {'0x100': 1},
+    'dm/gfx/tools/dmsh_build.py': {"'c1'": 4, "'geometry'": 3, "'img'": 1, "'tex'": 1, '0x100': 2},
     'dm/gfx/tools/dmsh_fetch.py': {},
     'dm/gfx/tools/cb_extent.py': {},
 }
@@ -124,6 +127,10 @@ class Host(unittest.TestCase):
                       (REPO / 'dm/gfx/tools/dmsh_xlate/Program.cs').read_text())
         assert m, 'Program.cs c2 layout line not found'
         self.assertEqual([int(x, 0) for x in m.groups()], [abi.C2_TEX, abi.C2_IMG, abi.C2_IMG_SLOTS, abi.C2_SEPTEX, abi.SEPTEX_SLOT0, abi.C2_SAMP])
+        m = re.search(r'const int C2HandleWords = \(SampBase \+ 8 \* (\d+)\) / 8;', (REPO / 'dm/gfx/tools/dmsh_xlate/Program.cs').read_text())
+        assert m, 'Program.cs C2HandleWords line not found'
+        self.assertEqual(int(m.group(1)), abi.C2_SEP_SLOTS)
+        self.assertEqual(abi.C2_ROW, 8)
 
 
 class Ratchet(unittest.TestCase):
