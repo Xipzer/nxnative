@@ -1185,6 +1185,8 @@ void front_run(void (*guest)(void)) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         NSRect r = NSMakeRect(0, 0, 1280, 720);
+        { const char *ws = getenv("DM_WINDOW_SIZE"); int ww, wh;   // DM_WINDOW_SIZE=<w>x<h> (test): another window size, e.g. 21:9 for the widescreen camera
+          if (ws && sscanf(ws, "%dx%d", &ww, &wh) == 2 && ww >= 320 && wh >= 180) r.size = NSMakeSize(ww, wh); }
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
