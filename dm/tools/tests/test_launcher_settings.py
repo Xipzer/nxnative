@@ -55,6 +55,10 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertNotIn('DM_FPS_HOLD', wonder)   # no frame step, as the Frame rate row
         self.assertIn('first start', botw['DM_PSO_PREBUILD']['note'])   # it runs once in the prepare step, before the first frame
 
+    def test_each_switch_has_one_row(self):   # a second row shows the setting twice on the launcher (a merge kept both copies of DM_FPS_HOLD once)
+        envs = [l.split('\t')[0] for l in (ROOT / 'dm/games/settings.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
+        self.assertEqual(sorted(e for e in set(envs) if envs.count(e) > 1), [])
+
     def test_hold_frames_takes_on_and_off(self):   # the host reads DM_FPS_HOLD as on / off (hle_nvn.c), not 1 / 0
         s = build(BOTW, 'nvn')['DM_FPS_HOLD']
         self.assertEqual((s['on'], s['off'], s['default']), ('on', 'off', 'on'))
