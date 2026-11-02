@@ -15,7 +15,9 @@ endif
 endif
 GAME_H = gen/$(GAME)/game_profile.h
 include ../mac/min_os.mk
-NATIVE_OPT ?= -O3 -flto=full   # host C / Objective-C and libvpx (#556); guest ARM64 and offline Metal keep their own
+# Host C / Objective-C and libvpx (#556): -O3. Not -flto=full: with link-time optimization the big-stack entry (hle_bigstack.c, HLE_FORCE_BIG,
+# PR #721) switched to a bad stack and Breath of the Wild crashed with SIGBUS in nnMain; -O3 alone runs. Guest ARM64 and offline Metal keep their own
+NATIVE_OPT ?= -O3
 VPX_OPT ?= $(NATIVE_OPT)
 CFLAGS=$(NATIVE_OPT) -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)

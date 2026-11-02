@@ -85,8 +85,7 @@ targets:
         GCC_WARN_INHIBIT_ALL_WARNINGS: YES
       configs:
         Release:
-          GCC_OPTIMIZATION_LEVEL: 3      # the host's C / Objective-C as the Mac host is built (#556): -O3 and full LTO; Release's default was -Os without LTO
-          LLVM_LTO: YES
+          GCC_OPTIMIZATION_LEVEL: 3      # the host's C / Objective-C at -O3, as the Mac host (dm/host/Makefile); no LTO, which breaks the big-stack entry (hle_bigstack.c)
 schemes:
   ${DM_SCHEME_NAME}:
     build:
