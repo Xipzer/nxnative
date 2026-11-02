@@ -180,7 +180,18 @@ static void tv_attach(void) {
     // at most 1080p: the game renders 1080p docked, and a 4K drawable only adds an upscale and a 4K stream (an AirPlay TV showed black, the GPU went from 15 to 60 ms a frame).
     // Taken from the 16:9 picture, not the screen, so a display of another shape still gets the full 1920 pixels across the picture
     CGRect f = fit_16_9(g_tv.bounds);
-    v.layer.contentsScale = MIN(v.layer.contentsScale, 1920.0 / MAX(f.size.width, 1)); [v setNeedsLayout];
+    // A cable (HDMI / USB-C display) takes the screen's own pixels up to 3840 across, so present upscaling (MetalFX) scales the game straight to the TV's
+    // resolution instead of the TV stretching 1080p. AirPlay, or a route that cannot be told, stays at 1080p. DM_TV_MAX=<width> overrides (1920 keeps 1080p on a cable)
+    UIScreen *scr = g_tv.windowScene.screen; int wired = 0;
+    for (AVAudioSessionPortDescription *o in AVAudioSession.sharedInstance.currentRoute.outputs) if ([o.portType isEqualToString:AVAudioSessionPortHDMI]) wired = 1;
+    UIScreenMode *best = nil; NSMutableString *modes = [NSMutableString string];
+    for (UIScreenMode *m in scr.availableModes) { [modes appendFormat:@" %.0fx%.0f", m.size.width, m.size.height]; if (!best || m.size.width * m.size.height > best.size.width * best.size.height) best = m; }
+    double maxw = wired ? 3840 : 1920; const char *mx = getenv("DM_TV_MAX"); if (mx && atof(mx) >= 640) maxw = atof(mx);
+    if (wired && best && maxw > 1920 && ![scr.currentMode isEqual:best]) { @try { scr.currentMode = best; } @catch (id e) { LOG("[RED] front end: the TV kept its mode (%s)", [[e description] UTF8String]); } }
+    double px = MIN(f.size.width * MAX(scr.scale, scr.nativeScale), MIN(maxw, best ? best.size.width : maxw));
+    LOG("front end: TV route %s, modes%s, current %.0fx%.0f, scale %.2f native %.2f: the picture at %.0f pixels across", wired ? "HDMI (cable)" : "AirPlay or unknown", modes.UTF8String,
+        scr.currentMode.size.width, scr.currentMode.size.height, scr.scale, scr.nativeScale, px);
+    v.layer.contentsScale = px / MAX(f.size.width, 1); [v setNeedsLayout];
     if (g_tv_mode_was < 0) g_tv_mode_was = dm_opmode();
     dm_set_opmode(1);
     LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, console mode", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * v.layer.contentsScale, f.size.height * v.layer.contentsScale);

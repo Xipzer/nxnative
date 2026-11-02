@@ -6224,10 +6224,13 @@ static void taau_resolve(void) {
 // colour 0's alpha with the function and reference at fragment buffer DMSH_ALPHA_BUFFER before each return), and its draws bind them there (at_bind). The function and the
 // reference are data, not part of the pipeline: one pipeline serves every function, and a draw that changes the reference every frame (a dissolve) keeps it. As in OpenGL,
 // there is no test when colour 0 goes to an integer target
-static inline int atest_on(void) { return S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS; }
+static int atest_env(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ATEST"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_ATEST=0: the alpha test is not applied (diagnostic)"); } return v; }
+static uint64_t g_atest_draws, g_all_draws;
+static inline int atest_on(void) { return atest_env() && S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS; }
 static uint32_t atest_key(NvShader *fs, const uint32_t cfmt[8], const uint8_t *lmap) {   // pso_key.atest; lmap: a merged pass's physical → logical targets
     if (!fs || !atest_on()) return 0;
     for (int i = 0; i < 8; i++) if (cfmt[i] && (lmap ? lmap[i] : i) == 0 && pf_int_kind((MTLPixelFormat)cfmt[i])) return 0;
+    { static int said; if (!said++) MLOG("[atest] first pipeline with the alpha test: shader %s, function %u ref %.3f", fs->key, S.color.alpha_func, (double)S.alpha_ref); }
     if (!fs->has_alpha) { RED_ONCE(128, "shader %s draws with alpha function %u but has no alpha test library (its colour 0 has no float alpha): drawn without the test", fs->key, S.color.alpha_func); return 0; }
     return 1;
 }
