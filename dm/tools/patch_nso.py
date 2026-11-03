@@ -1396,19 +1396,19 @@ obs += region_obs
 # nvn_fstep.h): the step is the number of vsyncs the host keeps the frame on screen (1 = 60 fps, 2 = 30 when 60 does not hold), plus one while the game is behind real time after
 # a late frame, so motion is even and game time = real time. The steps stay values the games' own logic uses (1 to 3). Age of Calamity's updates are not held by the presents:
 # its stubs run them at the cap, and the host only paces its presents (its patches.py).
-# State page = the page after the key page (zero in the file, read-write in both loaders): +0 float target fps written by the loader (fps_target, DM_FPS_TARGET; 0 = every stub
-# runs the original instructions), +4 30 fps movie/cinematic flag, +8 double lead (TOTK), +0x10 float render scale (TOTK, BotW), +0x18 double game seconds (TOTK),
+# State page = the page after the key page (zero in the file, read-write in both loaders): +0 float target fps written by the loader (fps_target, DM_FPS_TARGET; 0 = timing stubs
+# run the original instructions), +4 30 fps movie/cinematic flag, +8 double lead (TOTK), +0x10 float render scale (TOTK, BotW), +0x18 double game seconds (TOTK),
 # +0x20 u32 step in vsyncs (host; 0 = not decided yet), +0x24 u32 a step the game fixes itself (BotW's VFR override; 0 = none), +0x28 u32 AoC's vsyncs per update, marked by
 # its first stub (0 = off), +0x30 u64 vsyncs stepped (the stubs; logged by the host to check the game's speed). Fields a build's stubs read only when its fixups table names them
 # (the loader writes them for that build alone): +0x300 u64 output width | height << 32 and +0x308 float output width (OUTPUT_W / OUTPUT_H; 0 = the game's), +0x30c u32 render buffer pool
 # factor and +0x318 u64 bytes added to the game's heaps around it (RENDER_POOL; 0 = as the game sets them), +0x310 float variable frame step in 1/30 s units (VAR_STEP, written by the
-# host each frame; 0 = off) and +0x54 the same latched by the build's stubs once a game frame. Stub bodies assembled with clang
+# host each frame; 0 = off) and +0x54 the same latched by the build's stubs once a game frame. +0x320 float desired camera aspect (host, 0 = original) and +0x324 float effective camera aspect (the BotW / TOTK camera writer's acknowledgement). Stub bodies assembled with clang
 # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
 # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, ctx.render_scale = 1 marks a render-scale stub, and
 # ctx.keys[KEY] = value adds a row to the fixups table for stubs the loader writes further state page fields for (VAR_STEP, RENDER_POOL, VIEW_W / VIEW_H, OUTPUT_W / OUTPUT_H)
 FRAME_STEP = PATCHES['FRAME_STEP']
 FS_STATE_OFF = 0
-FS_STATE_SIZE = 0x320   # through the render scale and variable step fields (+0x300..+0x31f), past upstream's (up to +0x200)
+FS_STATE_SIZE = 0x328   # through the camera aspect fields (+0x320 / +0x324), past upstream's (up to +0x200)
 RENDER_SCALE = 0   # 1 = the build has a render-scale stub (state +0x10): the fixups table says so (RENDER_SCALE), and the iOS launcher offers the setting (dm/games/settings.tsv)
 FS_KEYS = {}   # further fixups table rows of the build's stubs (ctx.keys): the loader writes their state page fields for this build only
 if BUILD_ID in FRAME_STEP and NAME == 'main':

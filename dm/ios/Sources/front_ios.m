@@ -7,6 +7,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <AVFAudio/AVFAudio.h>
+#import <objc/runtime.h>
 #include <errno.h>
 #include "front.h"
 #include "hle.h"
@@ -60,6 +61,7 @@ static UILabel *front_ios_fps_label(void);
     if (self.maxPixelWidth > 0) scale = MIN(scale, self.maxPixelWidth / MAX(self.bounds.size.width, 1));
     l.contentsScale = scale;
     l.drawableSize = CGSizeMake(self.bounds.size.width * l.contentsScale, self.bounds.size.height * l.contentsScale);
+    dm_game_aspect_drawable(l.drawableSize.width, l.drawableSize.height);
 }
 @end
 static void tv_attach(void);
@@ -97,6 +99,25 @@ static void tv_attach(void);
 - (void)showFPS:(BOOL)on;
 @end
 static DmRootVC *g_root;
+// The launcher keeps each choice in UserDefaults, so last run's Performance HUD choice is readable before anything in the process has a Metal device: the host's loading
+// at app launch can make the first one before the launcher's settings reach startGame's front_hud_env, and Metal reads MTL_HUD_ENABLED only then (iPad: the HUD never
+// showed when switched on in the launcher). An explicit DM_METAL_HUD (env file) wins
+__attribute__((constructor)) static void hud_saved(void) {
+    if (getenv("DM_METAL_HUD")) return;
+    NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"launcher.DM_METAL_HUD"];
+    if (v.intValue) { setenv("MTL_HUD_ENABLED", "1", 0); setenv("MTL_HUD_HIDE_METALFX_METRICS", "1", 0); }
+}
+// Sets the HUD on the presented layer and logs what the layer kept and whether MTL_HUD_ENABLED was set, so a device where the HUD does not appear can be told apart from one
+// where it was never switched on. Called again after the first layout: a layer reconfigured in between keeps none of it
+static void front_hud_apply(const char *when) {
+    if (!(getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD")))) return;
+    if (!g_layer) { LOG("front end: Metal performance HUD asked for at %s, but there is no Metal layer yet", when); return; }
+    g_layer.developerHUDProperties = @{@"mode": @"default"};
+    const char *env = getenv("MTL_HUD_ENABLED");
+    LOG("front end: Metal performance HUD on at %s (layer %s, properties %s, MTL_HUD_ENABLED=%s)", when, object_getClassName(g_layer),
+        g_layer.developerHUDProperties.count ? "kept" : "[RED] dropped by the layer", env ? env : "[RED] unset: the first device was made before it");
+}
+static BOOL g_widescreen;   // DM_WIDESCREEN (startGame)
 static CGFloat g_picture_aspect = DM_PICTURE_16_9;   // the presented picture's width / height (front_picture_shape); main thread
 static void launcher_done(void) { [g_root startGame]; }
 @implementation DmRootVC
@@ -152,6 +173,7 @@ static void launcher_done(void) { [g_root startGame]; }
     const char *dev = front_ios_device_check();   // that first device: a GPU without BC textures is refused here, not at launch, so the launcher's HUD switch counts
     if (dev) { [self showHint:[NSString stringWithFormat:@"This device is not supported.\n%s", dev]]; return; }   // the host does not start
     self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
+    { const char *w = getenv("DM_WIDESCREEN"); g_widescreen = !(w && !strcmp(w, "0")); }
     if (self.fill) LOG("front end: picture Fill (DM_PICTURE_FIT=fill), the 16:9 picture covers the screen in landscape and its edges are cropped");
     self.view.clipsToBounds = YES;   // with Fill the game view is larger than the screen
     self.view.window.traitOverrides.preferredContentSizeCategory = UIContentSizeCategorySmall;   // UIKit draws the in-game menu (GameMenu.swift) in this window: it keeps one compact text size over the game, whatever the system's text size
@@ -159,7 +181,7 @@ static void launcher_done(void) { [g_root startGame]; }
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
     g_screen_hz = (int)UIScreen.mainScreen.maximumFramesPerSecond;
-    if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
+    front_hud_apply("game view");   // Apple's HUD over the game: frame rate, frame and GPU time, memory
     dm_haptics_apple_init();
     self.pad = dm_gamepad_view(self.view.bounds);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -189,7 +211,11 @@ static void launcher_done(void) { [g_root startGame]; }
     UIEdgeInsets gameInsets = dm_game_safe_insets(b, self.view.safeAreaInsets, duoPortrait);
     BOOL onTV = self.game.superview != self.view;   // the TV's view lays the picture out; the phone is all pad
     DmLayout layout = onTV ? dm_layout_pad_only(b) : dm_layout_picture(dm_layout(b, gameInsets, self.partiallyOpen, division, g_picture_aspect), b, self.fill, g_picture_aspect);
+    // Widescreen (DM_WIDESCREEN, on by default): the picture covers the whole screen and a game with a camera patch (Breath of the Wild, Tears of the Kingdom) draws the wider
+    // view into it (loader.c dm_game_aspect_drawable); a game without one is fitted inside by the present (nvn_aspect.h). Not while the picture sits above the controls
+    if (!onTV && !layout.separated && g_widescreen) layout.game = b;
     if (!onTV) self.game.frame = layout.game;
+    { static int laid; if (!laid++) front_hud_apply("first layout"); }
     layout.topSafeOnly = duoPortrait;
     NSString *line = [NSString stringWithFormat:@"%@, hinge %ld%s, divisions %@, picture %@, controls %@", onTV ? @"pad only (picture on the TV)" : layout.separated ? @"split" : self.fill ? @"overlay, Fill" : @"overlay",
                       (long)self.hingeStatus, self.partiallyOpen ? " (half open)" : "", regionLog, NSStringFromCGRect(layout.game), NSStringFromCGRect(layout.controls)];
