@@ -1,7 +1,6 @@
 // Host lifecycle: graceful exit (SIGTERM; on iOS the App termination callback calls dm_host_shutdown).
 // Pause audio, suspend graphics (wait for in-flight NVN calls to end and drain GPU work), then _exit(0); a 1.5 s fallback goes straight to _exit(0).
 // The default action also exits in about 0.08 s (exit code 143); the value of this function is stopping background threads in order, exit code 0, and giving the iOS lifecycle callback an entry.
-#include <dlfcn.h>
 #include "hle.h"
 #include <dispatch/dispatch.h>
 #include <stdatomic.h>
@@ -18,7 +17,9 @@ void dm_host_shutdown(const char *why) {
     dm_cheats_exit();                               // a clean exit: no safe mode for the cheats at the next launch (atexit does not run either)
     dm_audio_suspend(1);
     dm_gfx_suspend(1);
-    { int (*w)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "__llvm_profile_write_file"); if (w) w(); }   // a profiling build (-fprofile-instr-generate): _exit skips the profile's atexit writer
+#ifdef DM_PROFILE_GEN   // a profiling build (-fprofile-instr-generate -DDM_PROFILE_GEN): _exit skips the profile's atexit writer
+    { int __llvm_profile_write_file(void); __llvm_profile_write_file(); }
+#endif   // a profiling build (-fprofile-instr-generate): _exit skips the profile's atexit writer
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
     _exit(0);
 }
