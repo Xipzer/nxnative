@@ -36,6 +36,7 @@ DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
 DM_FPS_HOLD	toggle	on/off	DM_GAME_FPS_HOLD	DM_GAME_FPS_TARGET!=0	Performance	Hold frames when late	
 DM_THERMAL_CAP	toggle	-	1	DM_GAME_FPS_TARGET!=0	Performance	Halve when hot	Holds 30 fps while iOS reports the device as hot, so it cools down. Off keeps 60 at the cost of heat and of the frames the slower GPU still drops.
 DM_QUALITY_AUTO	toggle	-	0	gfxapi:nvn	Performance	Adaptive quality	Lowers upscaling detail, then render scale, while frames come late; raises them again when they fit.
+DM_FRAME_WG	toggle	-	0	gfxapi:nvn	Performance	Deadline boost	Tells iOS each frame's deadline, so it keeps the game on the fast cores at a higher clock. Uses more power and heat.
 DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.
 DM_PSO_MTL4	toggle	-	DM_GAME_PSO_MTL4|1	gfxapi:nvn	Performance	Metal 4 pipelines	Keeps a pipeline archive; uses more memory.
 DM_PSO_PREBUILD	toggle	-	1	gfxapi:nvn	Performance	Pipeline prebuild	The first start waits a few minutes for it, once.	needs=DM_PSO_MTL4=1
