@@ -27,7 +27,11 @@ private struct InGameSettingsView: View {
                             ForEach(rows) { s in
                                 VStack(alignment: .leading, spacing: 2) {
                                     SettingRow(s: s, m: m)
-                                    if let note = liveNotes[s.env] {
+                                    if s.env == "DM_RENDER_SCALE", let boot = Double(String(cString: getenv("DM_RENDER_SCALE") ?? strdup("1.0"))),
+                                       let want = Double(m.values[s.env] ?? s.def), want > max(boot, 1.0) + 1e-6 {
+                                        Text("Now \(Int((max(boot, 1.0) * 100).rounded())) %. \(Int((want * 100).rounded())) % from the next start (the game sizes its render buffers when it starts).")
+                                            .font(.caption).fontWeight(.semibold).foregroundStyle(.orange)
+                                    } else if let note = liveNotes[s.env] {
                                         Text(note).font(.caption2).foregroundStyle(.secondary)
                                     } else if !liveKeys.contains(s.env) {
                                         Text("Takes effect next time the game starts").font(.caption2).foregroundStyle(.secondary)

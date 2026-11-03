@@ -17,6 +17,7 @@ void dm_host_shutdown(const char *why) {
     dm_cheats_exit();                               // a clean exit: no safe mode for the cheats at the next launch (atexit does not run either)
     dm_audio_suspend(1);
     dm_gfx_suspend(1);
+    { extern int __llvm_profile_write_file(void) __attribute__((weak)); if (__llvm_profile_write_file) __llvm_profile_write_file(); }   // a profiling build (-fprofile-instr-generate): _exit skips the profile's atexit writer
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
     _exit(0);
 }
