@@ -512,7 +512,7 @@ static __thread pc_cache t_pc;
 static pc_cache g_pc_main;
 static pthread_t g_sub_thread; static _Atomic int g_sub_thread_set;
 static inline pc_cache *pc_mine(void) { return atomic_load_explicit(&g_sub_thread_set, memory_order_relaxed) && pthread_equal(pthread_self(), g_sub_thread) ? &g_pc_main : &t_pc; }
-static inline unsigned pc_slot(uint64_t addr) { return (unsigned)(((addr >> 12) * 0x9E3779B97F4A7C15ull) >> (64 - PC_BITS)); }
+static inline unsigned pc_slot(uint64_t addr) { return (unsigned)(((addr >> 16) * 0x9E3779B97F4A7C15ull) >> (64 - PC_BITS)); }   // keyed by 64 KB: an entry holds its whole pool, so a coarser key hits more often (uniform rings move to a new 4 KB page every few draws)
 static inline const pc_ent *pc_get(uint64_t addr, uint64_t len) {
     pc_cache *tc = pc_mine();
     if (tc->gen != atomic_load_explicit(&g_pool_gen, memory_order_acquire)) return NULL;
@@ -1136,24 +1136,27 @@ static inline unsigned ubd_pf_slot(uint64_t pg) { return (unsigned)((pg * 0x9E37
 enum { UBD_BM_SHIFT = 21 };   // pages in the window
 static const uint64_t UBD_BM_BASE = 0x7000000000ull;
 static uint64_t g_ubd_bm[(1u << UBD_BM_SHIFT) / 64];
+// A summary bit per 256 KB of the window (4 KB in all, stays in L1): most lookups (buffers nowhere near a deferred update) end at one load of it, where the page bitmap
+// (256 KB) missed the cache. A set bit only says some page in that 256 KB may hold an update; the page bitmap then decides
+static uint64_t g_ubd_l1[(1u << (UBD_BM_SHIFT - 6)) / 64];
 static inline int ubd_bm_in(uint64_t lo, uint64_t hi) { return lo >= UBD_BM_BASE && ((hi - 1 - UBD_BM_BASE) >> 12) < (1u << UBD_BM_SHIFT); }
 static void ubd_pf_add(uint64_t lo, uint64_t hi) {
     if (((hi - 1) >> 12) - (lo >> 12) > 16) { g_ubd_wide = 1; return; }
-    if (ubd_bm_in(lo, hi)) for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) g_ubd_bm[pg >> 6] |= 1ull << (pg & 63);
+    if (ubd_bm_in(lo, hi)) for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) { g_ubd_bm[pg >> 6] |= 1ull << (pg & 63); g_ubd_l1[pg >> 12] |= 1ull << ((pg >> 6) & 63); }
     for (uint64_t pg = lo >> 12; pg <= (hi - 1) >> 12; pg++) { unsigned k = ubd_pf_slot(pg);
         while (g_ubd_pf[k] && g_ubd_pf[k] != pg + 1) k = (k + 1) & (UBD_PF - 1);
         g_ubd_pf[k] = pg + 1; }
 }
 static inline int ubd_pf_hit(uint64_t lo, uint64_t hi) {
     if (g_ubd_wide || ((hi - 1) >> 12) - (lo >> 12) > 16) return 1;
-    if (ubd_bm_in(lo, hi)) { for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) if (g_ubd_bm[pg >> 6] >> (pg & 63) & 1) return 1; return 0; }
+    if (ubd_bm_in(lo, hi)) { for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) if ((g_ubd_l1[pg >> 12] >> ((pg >> 6) & 63) & 1) && (g_ubd_bm[pg >> 6] >> (pg & 63) & 1)) return 1; return 0; }
     for (uint64_t pg = lo >> 12; pg <= (hi - 1) >> 12; pg++) { unsigned k = ubd_pf_slot(pg);
         while (g_ubd_pf[k]) { if (g_ubd_pf[k] == pg + 1) return 1; k = (k + 1) & (UBD_PF - 1); } }
     return 0;
 }
 static void ubd_bm_clear(void) {   // the pages of the listed updates (an update a later one replaced lies inside it): before the list is emptied
     for (int i = 0; i < g_nubd; i++) { uint64_t lo = g_ubd[i].lo, hi = g_ubd[i].hi;
-        if (hi > lo && ((hi - 1) >> 12) - (lo >> 12) <= 16 && ubd_bm_in(lo, hi)) for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) g_ubd_bm[pg >> 6] &= ~(1ull << (pg & 63)); }
+        if (hi > lo && ((hi - 1) >> 12) - (lo >> 12) <= 16 && ubd_bm_in(lo, hi)) for (uint64_t pg = (lo - UBD_BM_BASE) >> 12; pg <= (hi - 1 - UBD_BM_BASE) >> 12; pg++) { g_ubd_bm[pg >> 6] &= ~(1ull << (pg & 63)); g_ubd_l1[pg >> 12] &= ~(1ull << ((pg >> 6) & 63)); } }
 }
 static int ubd_hits_scan(uint64_t lo, uint64_t hi) {
     if (hi <= lo || !ubd_pf_hit(lo, hi)) return 0;
