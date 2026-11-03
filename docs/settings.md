@@ -37,12 +37,6 @@ The slider's top is **per game**, because a game sizes its render target pools f
 - **When to change it:** below 100% for a higher frame rate on a phone; above 100% on a device with GPU time to spare.
 - **Cost:** GPU time roughly with the square of the setting, and more of the game's own render target pool.
 
-### Widescreen
-
-Breath of the Wild 1.9.0 and Tears of the Kingdom 1.4.3 automatically widen their gameplay cameras to a screen or window wider than 16:9. More world is visible at the sides; the scene and HUD retain their proportions. Existing internal render-target sizes are kept, so horizontal detail is spread across the wider view. Other builds and narrower screens keep their original framing.
-
-Set `DM_WIDESCREEN=0` in `env.txt` and restart to restore 16:9 gameplay. There is no launcher row for this switch. Maps, cinematic framing and other game-specific layouts are not guaranteed to fill every screen.
-
 ### Console mode
 
 **Docked** renders at the Switch's TV resolution, **Handheld** at its lower handheld resolution, which is lighter on the phone and can give a higher frame rate.
@@ -290,7 +284,6 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Game language | `DM_LANG` | a language code, such as `ja` |
 | Display mode (Mac) | `DM_FULLSCREEN` | `1` fullscreen, `0` a window |
 | Cloud saves folder (Mac) | `DM_SAVE_SYNC` | a folder; `icloud`: iCloud Drive › nxnative Saves; `0`: off |
-| Widescreen (BOTW 1.9.0, TOTK 1.4.3) | `DM_WIDESCREEN` | `0` original framing; unset enables wider screens |
 | Frame-rate counter | `DM_SHOW_FPS` | `1`, `0` |
 | Touch feedback | `DM_TOUCH_HAPTICS` | `1`, `0` |
 | Game rumble | `DM_RUMBLE` | `1`, `0` |

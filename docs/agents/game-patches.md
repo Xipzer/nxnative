@@ -66,11 +66,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step and render scale | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) | the game's own timing object |
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
 | `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
-| `build` → `game` | BOTW perspective camera aspect and projection acknowledgement | rendering | blocked: camera update has no reviewed function fingerprint yet | checked: all 13 original words checked in main cd57b23fa4bbad65803d9788c01821ee; native/wide outdoor Mac gameplay and camera acknowledgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's camera update and projection-object layout; drawable publication and presentation are general host behavior |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
-| `build` → `game` | TOTK perspective camera and viewport aspect producers | rendering | blocked: projection producers have no reviewed function fingerprints yet | checked: original words at all four sites checked in main 277178b7dba1b6d4949a84778d4abc58; native/wide cave Mac gameplay and camera acknowledgement | 1 | [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) | the game's four projection update sites and their object layouts; drawable publication and presentation are general host behavior |
-| `build` → `host` | BOTW rewritten frame-state capability gates | runtime | kept: only the reviewed build is allowed to publish camera state; additional capabilities require separate validation | checked: loader capability, build, state bounds and lifecycle tests; original camera words and outdoor Mac gameplay | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the state protocol can ultimately be described by rewriter capability metadata rather than a game-specific host whitelist |
-| `build` → `host` | TOTK rewritten frame-state capability gate | runtime | kept: only the reviewed build is allowed to publish camera state | checked: loader capability, build, state bounds and lifecycle tests; original projection words and opening-cave Mac gameplay | 1 | [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) | the state protocol can ultimately be described by rewriter capability metadata rather than a game-specific host whitelist |
 
 ## Summary
 
@@ -98,9 +94,9 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Subnautica: Below Zero](#subnautica-below-zero) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Super Smash Bros. Ultimate](#super-smash-bros-ultimate) | 11 | 0 | 0 | 1 | 0 | `game` |
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | `game` |
-| [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 6 | 0 | 1 | `build` → `game` ×3, `build` → `host` |
+| [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 5 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 13 | 0 | 1 | `build` → `game` ×2, `build` → `host` |
+| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | `build` → `game` |
 
 ## Games
@@ -509,8 +505,6 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **`build` → `game`**, frame rate, gap, judgement: interval controller: the lower bound and the GPU-time path. Sead::GameFrameworkNx's interval controller in this build; Tears of the Kingdom shares sead but not this code
 - **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: 60 fps frame step and render scale (ksys::VFR). The game's own frame code; the frame-step state page is general
-- **`build` → `game`**, rendering, blocked: camera update has no reviewed function fingerprint yet, checked: all 13 original words checked in main cd57b23fa4bbad65803d9788c01821ee; native/wide outdoor Mac gameplay and camera acknowledgement: BOTW perspective camera aspect and projection acknowledgement. The game's camera update and projection-object layout; drawable publication and presentation are general host behavior
-- **`build` → `host`**, runtime, kept: only the reviewed build is allowed to publish camera state; additional capabilities require separate validation, checked: loader capability, build, state bounds and lifecycle tests; original camera words and outdoor Mac gameplay: BOTW rewritten frame-state capability gates. The state protocol can ultimately be described by rewriter capability metadata rather than a game-specific host whitelist
 
 - **1.9.0 `main`** `cd57b23f…` ([patches.py:14](../../dm/games/01007EF00011E000/patches.py#L14))
   - cut `+0x112670c`: lower bound of the candidate interval: fmov s0,s11 (2.0) → fmov s0,s10 (1.0)
@@ -527,7 +521,6 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - frame step `+0xc61ef4`: output size global = the host's (state page +0x40; 0 = 1920x1080)
   - frame step `+0xc61f28`: output size global = the host's (state page +0x40; 0 = 1920x1080)
   - frame step `+0xeb0f88`: held-button counts step by the VFR ratio (menu repeat in game time at any frame step)
-  - frame step `+0x10edae0`: camera aspect = host drawable ratio (state +0x60; 0 = original), acknowledged at +0x64
   - frame step `+0x106d328`: render buffer pool size × the host factor (state page +0x4c; 0 = the game's 115 MB)
   - frame step `+0x11269b8`: setWaitVsyncInterval: the host's step unless the VFR override is set (state page target fps; 0 = the game's interval); latches the variable step
   - frame step `+0x125f118`: interval step: the VFR's frame ratio × 2 in place of max(interval, 1) (UI animation / fade)
@@ -545,8 +538,6 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   </details>
 
   - render scale stub (the launcher offers DM_RENDER_SCALE)
-  - launcher capabilities: CAMERA_ASPECT
-  - host [loader.c:293](../../dm/host/loader.c#L293): build check
 
 ### The Legend of Zelda: Link's Awakening
 
@@ -562,12 +553,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md), `0100F2C0115B6000`, [patches.py](../../dm/games/0100F2C0115B6000/patches.py).
 
 - **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: 60 fps frame step and render scale. The game's own timing object
-- **`build` → `game`**, rendering, blocked: projection producers have no reviewed function fingerprints yet, checked: original words at all four sites checked in main 277178b7dba1b6d4949a84778d4abc58; native/wide cave Mac gameplay and camera acknowledgement: TOTK perspective camera and viewport aspect producers. The game's four projection update sites and their object layouts; drawable publication and presentation are general host behavior
-- **`build` → `host`**, runtime, kept: only the reviewed build is allowed to publish camera state, checked: loader capability, build, state bounds and lifecycle tests; original projection words and opening-cave Mac gameplay: TOTK rewritten frame-state capability gate. The state protocol can ultimately be described by rewriter capability metadata rather than a game-specific host whitelist
 
-- **1.4.3 `main`** `277178b7…` ([patches.py:197](../../dm/games/0100F2C0115B6000/patches.py#L197))
-  <details><summary>13 frame-step sites</summary>
-
+- **1.4.3 `main`** `277178b7…` ([patches.py:136](../../dm/games/0100F2C0115B6000/patches.py#L136))
   - frame step `+0xd5cc0`: view render size x the host render scale (1.0 = original)
   - frame step `+0xd5d80`: dynamic resolution only at render scale 1.0
   - frame step `+0x1fbc80`: D-pad menu fade starts at full rate under fractional steps (FPSLocker)
@@ -576,17 +563,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - frame step `+0x2db18c`: frame step from the host in whole vsyncs, by elapsed time until it has decided one (state page target fps; 0 = original interval logic)
   - frame step `+0x3e562c`: game step reads the float fps (original integer fps and scvtf when off)
   - frame step `+0x3e5638`: scvtf moved into the stub at the load
-  - frame step `+0x628c74`: camera aspect = host drawable ratio, acknowledged after projection store
-  - frame step `+0xb43460`: camera aspect = host drawable ratio, acknowledged after projection store
   - frame step `+0xbe14a8`: swapchain argument 1 when on (FPSLocker)
-  - frame step `+0x1ff04f4`: viewport projection aspect follows host drawable ratio without camera acknowledgement
-  - frame step `+0x253fbb0`: viewport projection aspect follows host drawable ratio without camera acknowledgement
-
-  </details>
-
   - render scale stub (the launcher offers DM_RENDER_SCALE)
-  - launcher capabilities: CAMERA_ASPECT
-  - host [loader.c:294](../../dm/host/loader.c#L294): build check
 
 ### Xenoblade Chronicles 3
 
