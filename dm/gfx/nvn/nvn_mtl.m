@@ -27,7 +27,8 @@
 #include "nvn_dirty.h"
 #include "nvn_depth_clear.h"
 #include "nvn_refl.h"
-#include "nvn_maxmetal.h"   // the shaders the split missed, translated at run time
+#include "nvn_maxmetal.h"
+#include "../../host/dm_live.h"   // settings changed while the game runs (live_sync)   // the shaders the split missed, translated at run time
 #include "nvn_cover.h"
 #include "nvn_border.h"
 #include "nvn_primitive.h"
@@ -803,6 +804,7 @@ void *objc_autoreleasePoolPush(void); void objc_autoreleasePoolPop(void *);
 static void *g_sub_pool;
 static int tbdr_on(void);
 static void treg_finish_submission(void);
+static void live_sync(void);   // settings changed while the game runs (end of file)
 
 static uint64_t g_sub_serial;   // Submission index (used by the parallel precompile's 'predict only once per submission')
 // The first submission: the prepare step (warm_start), before anything of it is encoded. No GPU work: the submit entry (hle_nvn.c) calls it outside the graphics gate
@@ -817,6 +819,7 @@ void mtl_sub_begin(void) {
     warm_claim();
     if (g_cb) MDIE("submit re-entered");
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
+    live_sync();
     atomic_store(&g_last_commit_error, 0);
     g_sub_pool = objc_autoreleasePoolPush();
     g_cb = rec_cb_new();
@@ -4883,16 +4886,17 @@ static MTLSamplerAddressMode wrapm(int w) {
 }
 // Filtering the host can raise for any game, because it builds every sampler the game uses: the setting
 // is a floor, never a ceiling, so a game that asks for more keeps what it asked for.
+static float g_aniso_v = -1; static int g_trilin_v = -1;   // -1: read again (live_sync clears them)
 static float dm_aniso(void) {
-    static float v = -1;
-    if (v < 0) { const char *e = getenv("DM_ANISO"); v = e ? strtof(e, NULL) : 0; if (v < 1) v = 0; if (v > 16) v = 16;
-                 if (v) MLOG("DM_ANISO=%g: every sampler filters at least this anisotropy", v); }
+    float v = g_aniso_v;
+    if (v < 0) { const char *e = dm_live_getenv("DM_ANISO"); v = e ? strtof(e, NULL) : 0; if (v < 1) v = 0; if (v > 16) v = 16;
+                 if (v) MLOG("DM_ANISO=%g: every sampler filters at least this anisotropy", v); g_aniso_v = v; }
     return v;
 }
 static int dm_trilinear(void) {
-    static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_TRILINEAR"); v = e && atoi(e) ? 1 : 0;
-                 if (v) MLOG("DM_TRILINEAR=1: a sampler that filters linearly also blends mip levels"); }
+    int v = g_trilin_v;
+    if (v < 0) { const char *e = dm_live_getenv("DM_TRILINEAR"); v = e && atoi(e) ? 1 : 0;
+                 if (v) MLOG("DM_TRILINEAR=1: a sampler that filters linearly also blends mip levels"); g_trilin_v = v; }
     return v;
 }
 static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
@@ -12035,10 +12039,11 @@ void mtl_exec(const uint8_t *p) {
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
 static id<MTLRenderPipelineState> g_blit_pso, g_sharp_pso; static MTLPixelFormat g_blit_fmt;
 // DM_SHARPEN=0..1: contrast adaptive sharpening of the presented picture (0 = off, the default). Read once
+static float g_sharpen_v = -1;   // -1: read again (live_sync)
 static float sharpen_amount(void) {
-    static float v = -1;
-    if (v < 0) { const char *e = getenv("DM_SHARPEN"); v = e ? strtof(e, NULL) : 0; if (v < 0) v = 0; if (v > 1) v = 1;
-                 if (v > 0) MLOG("DM_SHARPEN=%.2f: the presented picture is sharpened", v); }
+    float v = g_sharpen_v;
+    if (v < 0) { const char *e = dm_live_getenv("DM_SHARPEN"); v = e ? strtof(e, NULL) : 0; if (v < 0) v = 0; if (v > 1) v = 1;
+                 if (v > 0) MLOG("DM_SHARPEN=%.2f: the presented picture is sharpened", v); g_sharpen_v = v; }
     return v;
 }
 static id<MTLSamplerState> g_blit_samp;
@@ -12486,10 +12491,11 @@ static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
 extern uint8_t *dm_fps_state;   // loader.c: +0 float target fps, +0x10 float render scale
 static int g_q_step;
 static float fx_out(void);   // below: DM_PRESENT_UPSCALE_OUT
+static int g_qauto_v = -1;   // -1: read again (live_sync)
 static int q_auto(void) {
-    static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_QUALITY_AUTO"); v = e && atoi(e) ? 1 : 0;
-                 if (v) MLOG("DM_QUALITY_AUTO=1: quality steps down to hold the frame rate and back up when frames fit"); }
+    int v = g_qauto_v;
+    if (v < 0) { const char *e = dm_live_getenv("DM_QUALITY_AUTO"); v = e && atoi(e) ? 1 : 0;
+                 if (v) MLOG("DM_QUALITY_AUTO=1: quality steps down to hold the frame rate and back up when frames fit"); g_qauto_v = v; }
     return v;
 }
 static void q_tick(void) {
@@ -12521,16 +12527,17 @@ static void q_tick(void) {
     float cur; memcpy(&cur, dm_fps_state + 0x10, sizeof cur);
     if (lad[g_q_step] != cur) memcpy(dm_fps_state + 0x10, &lad[g_q_step], sizeof cur);
 }
+static float g_fxout_v = -1;   // -1: read again (live_sync)
 static float fx_out(void) {
-    static float v = -1;
-    if (v < 0) { const char *e = getenv("DM_PRESENT_UPSCALE_OUT"); v = e ? strtof(e, NULL) : 1.0f;
+    float v = g_fxout_v;
+    if (v < 0) { const char *e = dm_live_getenv("DM_PRESENT_UPSCALE_OUT"); v = e ? strtof(e, NULL) : 1.0f;
                  if (!(v >= 1.0f && v <= 4.0f)) { if (e && *e) MLOG("[RED] DM_PRESENT_UPSCALE_OUT=%s: 1.0 to 4.0; keeping 1.0", e); v = 1.0f; }
-                 if (v > 1.0f) MLOG("DM_PRESENT_UPSCALE_OUT=%.2f: MetalFX reconstructs at %.2f of the viewport and the present averages it down", v, v); }
+                 if (v > 1.0f) MLOG("DM_PRESENT_UPSCALE_OUT=%.2f: MetalFX reconstructs at %.2f of the viewport and the present averages it down", v, v); g_fxout_v = v; }
     return v;
 }
 static int fx_mode(void) {
     if (g_fx_mode >= 0) return g_fx_mode;
-    const char *e = getenv("DM_PRESENT_UPSCALE"); int v = 0;
+    const char *e = dm_live_getenv("DM_PRESENT_UPSCALE"); int v = 0;
     if (e && (!strcmp(e, "metalfx") || !strcmp(e, "1"))) v = 1;
     else if (e && (!strcmp(e, "off") || !strcmp(e, "0"))) v = 0;
     else if (e && *e) MLOG("[RED] DM_PRESENT_UPSCALE=%s: metalfx or off; keeping %s", e, v ? "metalfx" : "off");
@@ -13439,3 +13446,28 @@ void mtl_wait_state_dump(void) {
 void mtl_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_alloc_waits; *grown = g_alloc_grown; *n = g_alloc_n; }   // Main submit allocator pool: how many times it waited, how many times it grew, how many exist now
 #include "nvn_capture.inc"   // DM_NVN_CAPTURE (one frame for dm/gfx/tests/nvn_replay)
 #pragma clang attribute pop
+
+// Settings changed while the game runs (dm_live.h, the iOS in-game settings sheet): at a submission's start, on the submit thread, the cached values are read again and the
+// samplers are made again with the new filtering (they are rebuilt from their registrations on first use, as after a new registration; g_reg_gen moves, so reused argument
+// blocks are refreshed). The present thread's upscaler and sharpening read their values again at their next use
+static unsigned g_live_seen;
+static void live_sync(void) {
+    unsigned g = atomic_load_explicit(&dm_live_gen, memory_order_acquire);
+    if (g == g_live_seen) return;
+    g_live_seen = g;
+    float a0 = dm_aniso(); int t0 = dm_trilinear();
+    g_aniso_v = -1; g_trilin_v = -1; g_sharpen_v = -1; g_qauto_v = -1; g_fxout_v = -1; g_fx_mode = -1;
+    if (dm_aniso() != a0 || dm_trilinear() != t0) {
+        os_unfair_lock_lock(&g_rmu);
+        int n = 0;
+        for (int i = 0; i < g_nsreg; i++) {
+            if (g_sview[i]) { CFRelease(g_sview[i]); g_sview[i] = NULL; g_srid[i] = 0; n++; }
+            if (g_sview_w[i]) { CFRelease(g_sview_w[i]); g_sview_w[i] = NULL; g_srid_w[i] = 0; }
+        }
+        g_reg_gen++;
+        os_unfair_lock_unlock(&g_rmu);
+        args_dirty_all();
+        MLOG("live settings: anisotropy %g, trilinear %d; %d samplers made again", dm_aniso(), dm_trilinear(), n);
+    }
+    MLOG("live settings applied: sharpening %.2f, upscaling %s at %.2f, adaptive quality %d", sharpen_amount(), fx_mode() ? "metalfx" : "off", fx_out(), q_auto());
+}

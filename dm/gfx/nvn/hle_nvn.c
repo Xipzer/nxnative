@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <os/workgroup.h>
 #include <dlfcn.h>
+#include "../../host/dm_live.h"
 void dm_frame_wg_join(void);
 #if TARGET_OS_OSX
 #define DM_MEM_CAP_DEFAULT_GB 24
@@ -1430,9 +1431,12 @@ extern uint64_t g_t0_ns;   // Host process start point (main.c; same base as the
 static os_workgroup_interval_t g_fwg; static int g_fwg_state;   // 0 not tried, 1 made, -1 off or failed
 static __thread int t_fwg_joined; static __thread os_workgroup_join_token_s t_fwg_tok;
 static uint64_t g_fwg_joins, g_fwg_fail;
+static int g_fwg_on = -1; static unsigned g_fwg_seen = ~0u;   // DM_FRAME_WG as last read (the in-game settings may turn it on or off, dm_live.h)
 static int fwg_get(void) {
+    unsigned lg = atomic_load(&dm_live_gen);
+    if (lg != g_fwg_seen) { g_fwg_seen = lg; const char *e = dm_live_getenv("DM_FRAME_WG"); g_fwg_on = e && atoi(e); }
+    if (!g_fwg_on) return 0;   // off unless asked for (launcher: Deadline boost); a workgroup already made stays, unused
     if (g_fwg_state) return g_fwg_state > 0;
-    const char *e = getenv("DM_FRAME_WG"); if (!(e && atoi(e))) { g_fwg_state = -1; return 0; }   // off unless asked for (launcher: Deadline boost)
     void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
     os_workgroup_interval_t (*mk)(const char *, os_clockid_t, os_workgroup_attr_t) = h ? (os_workgroup_interval_t (*)(const char *, os_clockid_t, os_workgroup_attr_t))dlsym(h, "AudioWorkIntervalCreate") : NULL;
     g_fwg = mk ? mk("nxnative frame", OS_CLOCK_MACH_ABSOLUTE_TIME, NULL) : NULL;
@@ -1449,9 +1453,10 @@ void dm_frame_wg_join(void) {   // the calling thread works to the frame's deadl
 }
 void dm_frame_wg_leave(void) { if (t_fwg_joined == 1) { os_workgroup_leave(g_fwg, &t_fwg_tok); t_fwg_joined = 0; } }   // hle_thread.c thread_exit (no logging: a guest stack may be small)
 static void fwg_frame(uint64_t period_ns) {   // on the acquiring thread, once per frame: the previous interval ends, the next one starts now with its deadline one period away
-    if (!period_ns || !fwg_get()) return;
+    static int started;
+    if (!period_ns || !fwg_get()) { if (started && g_fwg) { (void)os_workgroup_interval_finish(g_fwg, NULL); started = 0; } return; }   // turned off: the last interval ends
     dm_frame_wg_join(); if (t_fwg_joined < 0) return;
-    static int started; static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+    static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     if (started) (void)os_workgroup_interval_finish(g_fwg, NULL);
     uint64_t now = mach_absolute_time(), dl = now + period_ns * tb.denom / tb.numer;
     int r = os_workgroup_interval_start(g_fwg, now, dl, NULL); started = !r;
@@ -1466,6 +1471,15 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         static uint64_t rt_period; uint64_t period = present_period(o), rtp = rt_period_ns(o, period);
         if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
         rt_comp_tick(rtp); fwg_frame(rtp);
+        {   // DM_LIVE_AT=<frame>:<VAR>=<value>[;<VAR>=<value>...][,<frame>:...] (test): live settings changes at those frames, as the in-game settings sheet makes them
+            static const char *la = (const char *)1; if (la == (const char *)1) la = getenv("DM_LIVE_AT");
+            static int li; if (la) { char b[512]; snprintf(b, sizeof b, "%s", la); int k = 0;
+                for (char *step = strtok(b, ","); step; step = strtok(NULL, ","), k++) {
+                    if (k < li) continue; char *c = strchr(step, ':'); if (!c) break;
+                    if (g_frame < strtoull(step, NULL, 10)) break;
+                    li = k + 1; *c = 0; char *rest = c + 1;
+                    for (char *kv = rest; kv && *kv;) { char *nx = strchr(kv, ';'); if (nx) *nx = 0; char *eq = strchr(kv, '='); if (eq) { *eq = 0; dm_live_set(kv, eq + 1); } kv = nx ? nx + 1 : NULL; }
+                    break; } } }
         uint64_t p0 = now_ns(); int snap = mtl_snap_on();
         if (snap && mtl_link_active()) { if (wait && mtl_link_stalled()) sleep_until_ns(at); }   // present snapshots (nvn_mtl.m): the acquire's wait for a free ring slot below paces it.
             // While the display link is silent (the window in the background or covered) frames are dropped as fast as they come and
@@ -1753,9 +1767,10 @@ static int thermal_capped(void) {
     // threads. Serialize the sample and its recovery timer as one transition;
     // take the clock inside the lock so samples cannot arrive out of order.
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    static int on = -1, capped; static uint64_t last, calm_since;
+    static int on = -1, capped; static uint64_t last, calm_since; static unsigned seen;
     pthread_mutex_lock(&mu);
-    if (on < 0) { const char *e = getenv("DM_THERMAL_CAP"); on = !(e && !strcmp(e, "0")); }
+    { unsigned g = atomic_load(&dm_live_gen); if (g != seen) { seen = g; on = -1; } }   // the in-game settings may change it (dm_live.h)
+    if (on < 0) { const char *e = dm_live_getenv("DM_THERMAL_CAP"); int was = on; on = !(e && !strcmp(e, "0")); if (!on && capped) capped = 0; (void)was; }
     if (on) {
         uint64_t now = now_ns();
         if (now - last >= 1000000000ull) {   // the thermal state is read once a second

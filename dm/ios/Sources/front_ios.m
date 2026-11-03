@@ -21,7 +21,8 @@ void front_ios_boot(void);
 int front_ios_boot_ok(void);
 const char *front_ios_boot_message(void);   // main.m: why a build that keeps the game files off the IPA found none usable (NULL = the generic hint)
 const char *front_ios_device_check(void);   // main.m: why this device cannot run the games (its GPU has no BC textures; NULL = supported); makes the first Metal device
-bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
+bool dm_show_launcher(void *view_controller, void (*done)(void));
+void dm_show_ingame_settings(void *view_controller);   // InGameSettings.swift: the settings sheet over the running game   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
 
 static CAMetalLayer *g_layer;
 static int g_screen_hz;   // front_screen_max_fps below
@@ -135,9 +136,15 @@ static void front_hud_apply(const char *when) {
     if (self.fps) [self.view addSubview:self.fps];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
+    {   // three fingers tapped anywhere: the in-game settings (InGameSettings.swift). The pad still gets the touches
+        UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openSettings:)];
+        t.numberOfTouchesRequired = 3; t.cancelsTouchesInView = NO; t.delaysTouchesBegan = NO; t.delaysTouchesEnded = NO;
+        [self.view addGestureRecognizer:t];
+    }
     tv_attach();   // a TV connected while the launcher showed
     front_ios_boot();
 }
+- (void)openSettings:(UITapGestureRecognizer *)t { if (t.state == UIGestureRecognizerStateRecognized && !self.presentedViewController) dm_show_ingame_settings((__bridge void *)self); }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
@@ -234,10 +241,10 @@ static void front_ios_power_watch(void) {
 // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
 // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
 uint64_t mtl_present_count(void);
-static UILabel *front_ios_fps_label(void) {
+static UILabel *front_ios_fps_label(void) {   // made whether shown or not: the in-game settings can show it later (dm_front_set_fps)
     const char *e = getenv("DM_SHOW_FPS");
-    if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;
-    UILabel *l = [UILabel new];
+    int on = e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue];
+    UILabel *l = [UILabel new]; l.hidden = !on;
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
     l.text = @"-- fps";
@@ -247,7 +254,7 @@ static UILabel *front_ios_fps_label(void) {
         if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
         n0 = n; t0 = now;
     }];
-    LOG("front end: frame-rate counter on");
+    if (on) LOG("front end: frame-rate counter on");
     return l;
 }
 
@@ -391,4 +398,8 @@ void front_ios_focus_event(int ev) {
             if (g_session_off) front_ios_audio_session();
             front_ios_audio_apply(); dm_gamepad_active(); dm_focus_set(1); break;
     }
+}
+
+void dm_front_set_fps(int on) {   // InGameSettings.swift: the frame-rate counter shown or hidden while the game runs
+    dispatch_async(dispatch_get_main_queue(), ^{ if (g_root.fps) g_root.fps.hidden = !on; });
 }
