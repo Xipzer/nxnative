@@ -161,18 +161,10 @@ def frame_step(ctx):
     # is a global (main+0x1e43dc0, set at three guarded inits, from which the window and its display buffers are made); the docked mode (main+0x12660bc) sets the output width
     # (+0x1210, the divisor of the view scale above, so the 3D views stay at render scale × the docked base width 1600 at +0x1214), the system's render size (main+0x106dc70) and
     # the window crop (main+0xe9af58). All four take the host's size; the handheld mode keeps 1280x720. Each stub only rewrites the register the site is setting (x4 at the crop
-    # holds the height, set just before)
-    for site in (0xc61ef4, 0xc61f28, 0x12618c4):
-        fs_site(site, '0987c0f2')
-        start = here(); emit(ADRP(9, here(), FS_STATE_OFF))
-        for w in (0xf9418129,   # ldr x9,[x9,#0x300]      the host's size
-                  0xb5000069,   # cbnz x9,+3
-                  0xd280f009,   # mov x9,#0x780          the game's 1920x1080
-                  0xf2c08709):  # movk x9,#0x438,lsl #32
-            emit(w)
-        emit(B(here(), site + 4))
-        fs_put(site, [B(site, start)], 'output size global = the host\'s (state page +0x300; 0 = 1920x1080)')
-    fs_site(0x12660cc, '680a09f9'); fs_site(0x12660d4, '0887c0f2'); fs_site(0x1266104, '03f08052')
+    # holds the height, set just before). The output size statics (nnMain's two, the getter's) and the docked render size are also screen-shape sites (below): their stubs
+    # take the host's size last, so it wins over the taller height (the loader folds the screen shape into it)
+    whole_size = {0xc61ef4: 9, 0xc61f28: 9, 0x12618c4: 9, 0x12660d4: 8}   # site: the register holding width | height << 32
+    fs_site(0x12660cc, '680a09f9'); fs_site(0x1266104, '03f08052')
     start = here()
     emit(0xf9090a68)            # str x8,[x19,#0x1210]   the game's widths (1920.0, base 1600.0)
     emit(ADRP(8, here(), FS_STATE_OFF))
@@ -182,14 +174,6 @@ def frame_step(ctx):
         emit(w)
     emit(B(here(), 0x12660d0))
     fs_put(0x12660cc, [B(0x12660cc, start)], 'docked output width = the host\'s (state page +0x308; 0 = 1920.0)')
-    start = here(); emit(ADRP(8, here(), FS_STATE_OFF))
-    for w in (0xf9418108,       # ldr x8,[x8,#0x300]
-              0xb5000068,       # cbnz x8,+3
-              0xd280f008,       # mov x8,#0x780
-              0xf2c08708):      # movk x8,#0x438,lsl #32
-        emit(w)
-    emit(B(here(), 0x12660d8))
-    fs_put(0x12660d4, [B(0x12660d4, start)], 'docked render size = the host\'s output size')
     start = here(); emit(ADRP(3, here(), FS_STATE_OFF))
     for w in (0xf9418063,       # ldr x3,[x3,#0x300]
               0xb4000083,       # cbz x3,+4
@@ -241,6 +225,12 @@ def frame_step(ctx):
         emit(ADRP(16, here(), FS_STATE_OFF))
         for w in (load, 0x34000050, apply):   # ldr w16,[x16,#off]; cbz w16,+8 (0: the game's size); the host's height
             emit(w)
+        if site in whole_size:   # the host's whole output size, when it set one (state +0x300 u64; 0 = as above)
+            emit(ADRP(16, here(), FS_STATE_OFF))
+            for w in (0xf9418210,   # ldr x16,[x16,#0x300]
+                      0xb4000050,   # cbz x16,+2
+                      0xaa1003e0 | whole_size[site]):   # mov xN,x16
+                emit(w)
         emit(B(here(), site + 4))
         fs_put(site, [B(site, start)], why)
     OUT, LAY, LAYF = 0xb9404a10, 0xb9404e10, 0xb9405210   # ldr w16,[x16,#0x48] / #0x4c / #0x50

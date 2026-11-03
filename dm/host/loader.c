@@ -384,6 +384,9 @@ void dm_fps_state_apply(void) {
         else {
             uint32_t oh = (uint32_t)(1920.0f / a / 48.0f + 0.5f) * 48, lh = oh * 2 / 3; float lf = (float)lh;
             memcpy(dm_fps_state + 0x48, &oh, 4); memcpy(dm_fps_state + 0x4c, &lh, 4); memcpy(dm_fps_state + 0x50, &lf, 4);
+            uint64_t osz; memcpy(&osz, dm_fps_state + 0x300, sizeof osz);   // a render scale's output (above) takes the same shape: its width, the height of this ratio
+            if (osz) { uint32_t ow = (uint32_t)osz, sh = ((uint32_t)((double)ow * oh / 1920.0 + 0.5) + 1) & ~1u; osz = (uint64_t)sh << 32 | ow; memcpy(dm_fps_state + 0x300, &osz, sizeof osz);
+                LOG("%s: screen shape with the render scale: output %ux%u", name, ow, sh); }
             const char *ms = getenv("DM_SCREEN_ASPECT_SITES"); uint32_t mask = ms ? (uint32_t)strtoul(ms, NULL, 0) : 0xffffffffu;   // the stubs of the game's own conversions, one bit each (+0x54)
             memcpy(dm_fps_state + 0x54, &mask, 4);
             if (ms) LOG("%s: screen shape: conversion sites %#x (DM_SCREEN_ASPECT_SITES)", name, mask);
