@@ -4,6 +4,7 @@ import multiprocessing
 from pathlib import Path
 import pickle
 import re
+import signal
 import struct
 import sys
 import types
@@ -25,7 +26,7 @@ class FunctionAnalysis(unittest.TestCase):
         self.addCleanup(sys.modules.pop, self.scope.__name__, None)
         d = self.scope.__dict__
         d.update({k: v for k, v in vars(nso_asm).items() if not k.startswith('__')})
-        d.update(re=re, struct=struct, multiprocessing=multiprocessing, WORKERS=2, BIG_FN=0x40000, IMG=bytearray(0x21000),
+        d.update(re=re, struct=struct, multiprocessing=multiprocessing, signal=signal, WORKERS=2, BIG_FN=0x40000, IMG=bytearray(0x21000),
                  jumps={}, tabjumps={}, ARM64_OP_IMM=ARM64_OP_IMM, ARM64_OP_MEM=ARM64_OP_MEM, ARM64_OP_REG=ARM64_OP_REG)
         d['md'] = Cs(CS_ARCH_ARM64, CS_MODE_ARM); d['md'].detail = True
         defs: list[ast.stmt] = [n for n in tree.body if isinstance(n, ast.FunctionDef) or isinstance(n, ast.Assign)

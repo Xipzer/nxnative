@@ -88,20 +88,29 @@ Every extraction produced the same 5,989,103,860-byte image and SHA-256. Rewrite
 
 ## Build performance
 
-- **Resolved: chain-only updates rebuilt the offline pipeline archive.** See [archive reuse across chains](../../../docs/reference/shaders.md#offline-pipeline-archive-rebuilt-after-a-chain-only-update) for the general mechanism.
-- **Measured, 2026-10-31:** Apple M2 Max, macOS 26.6, Xcode 27.0 / AIR-TT 32023.921, native arm64 Python. Isolated checkout at `8dfa9c6d8b0e` plus the cache fix; the full app build used `--allow-other-metal` because the lock requests Xcode 27.2. A temporary comment-only chain edit changed `a7dbbce711c3` to `5b1637c7f097` without changing shader behavior. Both timed archive commands consumed the same 26,029 bases and library bytes; the legacy key changed, the content key did not.
+- **Resolved: a chain-only update rebuilt the offline pipeline archive.** The mechanism: [archive reuse across chains](../../../docs/reference/shaders.md#offline-pipeline-archive-rebuilt-after-a-chain-only-update).
+- **Measured, 2026-10-31, one run each:** Apple M2 Max, macOS 26.6, Xcode 27.0, Mac app build with `--allow-other-metal`. A temporary comment in a chain tool changed the chain version and no shader output, so both runs compiled from the same 26,029 bases and library bytes. A chain change that alters a library in the archive still rebuilds it.
 
-| Measurement (one run each) | Time |
+| Archive stage after the chain update | Time |
 |---|---:|
-| Legacy builder, archive after the chain update | 462.78 s (7m43s) |
-| Content-based cache, same post-update archive inputs | 10.10 s |
-| Archive-stage saving | 452.68 s (7m33s), 97.8% |
-| Complete Mac app rebuild after the controlled chain update | 785.62 s (13m06s) |
+| Old key: `metal-tt` ran again | 462.78 s (7m43s) |
+| Content key: archive reused | 10.10 s |
+| Saved | 452.68 s (7m33s), 97.8% |
 
-The full rebuild spent 4m59s on shader extraction, 5m10s preparing shaders (all 28,603 restored from cache), 16s reusing the archive, and 2m02s packaging/signing. The separate archive comparison's 10s and the full build's 16s include planning and hashing. The reused 1,217 MB archive retained its SHA-256 and modification time across the chain update. Warm-up is excluded: the legacy comparison was primed with the verified warm binary and its old-format input key, and an actual legacy invocation confirmed a cache hit before the update. The temporary source edit and chain header were restored afterward. This controlled chain-only case is not a total-time comparison with the earlier accumulated-update build, which also regenerated shader outputs.
+- **Current:** this game's profile does not set `pso_mtl4`, so its default iOS build makes no offline archive and gains nothing from this stage. No gameplay run used the reused archive; `regress.py check` compared its 28,603 shaders only, since the game has no `smoke.tsv`.
 
-- **Validation:** 112 Python test files (1,020 tests, 13 skipped) pass with the native toolchain; Python lint has zero new findings; the native pipeline-bundle test passes 52 checks. `regress.py check --games 0100F43008C44000` passes: 28,603/28,603 shaders, no changed MSL or new interface failures. This was the only discovered local Mac build; it has no `smoke.tsv`, so there was no gameplay run and other games remain unchecked. The benchmark logs, input hashes, commands and results are in `<build>/performance-research/pipeline-archive-reuse/` (`comparison.json`, `chain-update-app/`, `regression/`).
-- **iOS scope:** the shared builder is tested for both targets. A real synthetic iOS archive took 4.445s to build and 0.234s to reuse after a chain move, preserving its inode/mtime and updating the stamp. No LegendsZA IPA or device run was timed. Its current profile does not enable `pso_mtl4`, so its default iOS build does not request an offline archive and gets no timing benefit from this stage.
+### Shader extraction reuse
+
+- **Resolved: a translation-only update repeated the shader split.** The mechanism: [shader extraction reuse](../../../docs/reference/shaders.md#shader-extraction-reruns-after-translation-only-updates).
+- **Measured, 2026-11-01, one run each:** same machine and toolchain, with this game's 2.0.2 NSPs and DLC unchanged and the same comment-only kind of chain edit. The old extractor's fresh package was byte-identical to the reused one.
+
+| Split after the chain update | Time |
+|---|---:|
+| Old key: the split ran again | 276.04 s (4m36s) |
+| New key: package reused | 0.64 s |
+| Saved | 275.40 s (4m35s), 99.8% |
+
+- **Current:** this game's packs go through its own Oodle decoder in the Mac host, so an update that also changes another host source still splits again. The host itself is rebuilt for each chain, about 16 s of that stage in a full build.
 
 ## Found on this game
 
@@ -109,7 +118,8 @@ The full rebuild spent 4m59s on shader extraction, 5m10s preparing shaders (all 
 
 General host changes first needed here; each applies to every game:
 
-- **First-build parallelism:** [RomFS extraction](../../../docs/reference/packing.md#romfs-extraction-serializes-decryption-and-verification), [function analysis](../../../docs/reference/rewriter.md#function-analysis-runs-on-one-cpu-core) and [shader discovery](../../../docs/reference/shaders.md#main-and-archive-discovery-delay-independent-shader-scans). Measurements and validation limits are [above](#first-build-stage-measurements).
+- **Shader extraction reuse after translation-only updates:** [Shader extraction reruns after translation-only updates](../../../docs/reference/shaders.md#shader-extraction-reruns-after-translation-only-updates).
+- **Offline pipeline archive reuse across chains:** [Offline pipeline archive rebuilt after a chain-only update](../../../docs/reference/shaders.md#offline-pipeline-archive-rebuilt-after-a-chain-only-update).
 - **The pool enforced as on Horizon** (`mem_map_limit`, `hle_svc.c`): [the profile keys](../README.md#keys), [Maps past the application pool fail as on Horizon](../../../docs/reference/memory.md#maps-past-the-application-pool-fail-as-on-horizon).
 - **Trinity packs decoded with the game's own Oodle** (`trpfs_jobs` / `trinity_shaders`, `hle_oodle.c`, `DM_OODLE_HOST` / `DM_OODLE_MODULES`, set by the NSP script for any game with `ONEPACK` files): [BNSH in Trinity packs](../../../docs/reference/shaders.md#bnsh-in-trinity-packs), [01, Compressed RomFS content](../../../docs/agents/01-extract.md#compressed-romfs-content).
 - **SDK 19 calls:** csrng bytes, `GetAudioOutBufferCount` from the host queue, NVN state getters, `WaitForAddress` type 3, `OP_FENCE_SYNC`: [Cryptographically random bytes](../../../docs/reference/services.md#cryptographically-random-bytes), [AudioOut buffer count from the host queue](../../../docs/reference/audio.md#audioout-buffer-count-from-the-host-queue), [State read back through NVN getters](../../../docs/reference/nvn-objects.md#state-read-back-through-nvn-getters), [WaitForAddress type 3](../../../docs/reference/threads.md#waitforaddress-type-3-64-bit-wait-if-equal), [Fence syncs recorded in command buffers](../../../docs/reference/nvn-objects.md#fence-syncs-recorded-in-command-buffers).

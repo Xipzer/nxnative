@@ -160,6 +160,45 @@ int dm_sdk_ounce(void) {
     return ounce;
 }
 
+// The constants NVN2's own nvnDeviceGetInteger answers: the driver is compiled into the game's sdk, and its API and GPU code versions move with the SDK (20.5.19: API 231.30, GPU code minor 17;
+// 21.4.4: 231.39 and 20). Games check them: Splatoon Raiders requires minor >= 39 and otherwise creates no graphics system (main+0x31b86b0). The driver's switch over the items loads w0 with the
+// major first, then jumps through a byte table: mov w0, #231 / adr / adrp + add (the table) / ldrb / add, lsl #2 / br, with cmp wN, #<last item> before it. A case that is a constant is mov w0, #v; b.
+// Returns 1 with *out set when item has such a case; 0 for a case that reads something else (most items go through the driver's table lookup or read the GPU's description), or no such switch
+int dm_sdk_nvn2_item(unsigned item, int *out) {
+    static const uint8_t *table; static const uint32_t *cases; static unsigned last; static int found = -1;
+    if (found < 0) {
+        found = 0;
+        for (int i = 0; i < g_nmod && !found; i++) if (!strcmp(g_mod[i].name, "sdk")) {
+            const uint32_t *t = (const uint32_t *)g_mod[i].base; size_t n = g_mod[i].ro_off / 4;
+            for (size_t p = 8; p + 9 < n && !found; p++) if (t[p] == 0x52801CE0) {   // mov w0, #231
+                const uint8_t *tb = NULL; const uint32_t *adr = NULL; int lim = -1, ldrb = 0, br = 0;
+                for (size_t q = p - 8; q <= p + 8; q++) {
+                    uint32_t w = t[q];
+                    if ((w & 0xFFC0001F) == 0x7100001F) lim = (w >> 10) & 0xFFF;   // cmp wN, #imm
+                    else if ((w & 0x9F000000) == 0x90000000 && (t[q + 1] & 0xFFC00000) == 0x91000000) {   // adrp + add
+                        int64_t pg = (int64_t)(((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)); if (pg & 0x100000) pg -= 0x200000;
+                        tb = (const uint8_t *)(((uintptr_t)&t[q] & ~(uintptr_t)0xFFF) + (uintptr_t)(pg * 4096) + ((t[q + 1] >> 10) & 0xFFF));
+                    } else if ((w & 0x9F000000) == 0x10000000) {   // adr
+                        int64_t off = (int64_t)(((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)); if (off & 0x100000) off -= 0x200000;
+                        adr = (const uint32_t *)((const char *)&t[q] + off);
+                    } else if ((w & 0xFFE0FC00) == 0x38606800) ldrb = 1;   // ldrb wK, [xT, xI]
+                    else if ((w & 0xFFFFFC1F) == 0xD61F0000) br = 1;       // br
+                }
+                if (!tb || !adr || lim <= 1 || !ldrb || !br) continue;
+                const char *ro = (const char *)g_mod[i].base + g_mod[i].ro_off, *ro_end = (const char *)g_mod[i].base + g_mod[i].key_page_off;
+                if ((const char *)tb < ro || (const char *)tb + lim >= ro_end) continue;
+                table = tb; cases = adr; last = (unsigned)lim; found = 1;
+            }
+        }
+        if (dm_sdk_ounce() && !found) LOG("[RED] sdk: NVN2's nvnDeviceGetInteger switch not found; the device answers the newest versions known");
+    }
+    if (!found || item > last) return 0;
+    const uint32_t *c = cases + table[item];
+    if ((c[0] & 0xFFE0001F) != 0x52800000 || (c[1] & 0xFC000000) != 0x14000000) return 0;   // mov w0, #imm16; b
+    *out = (int)((c[0] >> 5) & 0xFFFF);
+    return 1;
+}
+
 // Cross-module symbol resolution: first look for a definition in the loaded modules, and only if not found hand over to HLE / stubs
 static uint64_t resolve_sym(module_t *m, const char *name) {
     void *p = loaded_sym(name); if (p) return (uint64_t)p;
@@ -229,6 +268,8 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "OUTPUT_H")) m->out_h = v;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
+        else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
+        else if (!strcmp(key, "FPS_TARGET_FIELD")) m->fps_target_field = (uint32_t)v;
         else if (!strncmp(key, "UE_CVAR:", 8)) {
             if (m->n_ue_cvar == (int)(sizeof m->ue_cvar / sizeof *m->ue_cvar) || strlen(key + 8) >= sizeof m->ue_cvar[0].name) die("%s: too many Unreal console variables, or too long a name: %s", path, key);
             strcpy(m->ue_cvar[m->n_ue_cvar].name, key + 8); m->ue_cvar[m->n_ue_cvar++].off = v;
@@ -259,7 +300,7 @@ int dm_fps_var_cap;   // a variable frame step capped at this frame rate (VAR_ST
 uint64_t dm_mem_extra;   // bytes a render scale above 1.0 adds to the application pool and the alias region for the game's larger render buffer pool (hle_svc.c)
 static const module_t *g_fps_m;   // the module holding the state page
 static void install_fps_state(module_t *m) {
-    if (m->fps_state_off + 0x60 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
+    if (m->fps_state_off + 0x320 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     dm_fps_state = m->base + m->fps_state_off; g_fps_m = m;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
@@ -317,20 +358,55 @@ void dm_fps_state_apply(void) {
     }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     if (m->render_pool && sc > 1.0f) {
-        // The game's render buffer pool grows by the factor's square, rounded up (+0x4c); the application pool and the alias region (where its virtual range lives) grow by what the
-        // pool adds plus 64 MB, and so do the game's fixed heaps around the pool (+0x58). Breath of the Wild's 115 MB held up to a factor of about 1.3
+        // The game's render buffer pool grows by the factor's square, rounded up (+0x30c); the application pool and the alias region (where its virtual range lives) grow by what the
+        // pool adds plus 64 MB, and so do the game's fixed heaps around the pool (+0x318). Breath of the Wild's 115 MB held up to a factor of about 1.3
         float sq = sc * sc; uint32_t k = (uint32_t)sq + (sq > (float)(uint32_t)sq);
         uint64_t x = render_pool_extra(m->render_pool, sc);
         int dm_mem_started(void);
         if (dm_mem_started()) { LOG("[RED] %s: render scale %.2f needs %.0f MB more application memory, but guest memory is already laid out; render buffer pool kept", name, sc, x / 1048576.0); k = 0; x = 0; }
         else LOG("%s: render buffer pool ×%u, %.0f MB more application memory (DM_RENDER_SCALE %.2f)", name, k, x / 1048576.0, sc);
-        memcpy(dm_fps_state + 0x4c, &k, sizeof k); memcpy(dm_fps_state + 0x58, &x, sizeof x); dm_mem_extra = x;
+        memcpy(dm_fps_state + 0x30c, &k, sizeof k); memcpy(dm_fps_state + 0x318, &x, sizeof x); dm_mem_extra = x;
         // Where the views outgrow the game's output (its base view width × the factor), the output takes their size, so the frame is composed and shown at it rather than scaled down
         if (k && m->view_w && m->out_w && sc * m->view_w > m->out_w + 0.5f) {
             uint32_t ow = ((uint32_t)(sc * m->view_w + 0.5f) + 1) & ~1u, oh = ((uint32_t)(sc * m->view_h + 0.5f) + 1) & ~1u;
             uint64_t osz = (uint64_t)oh << 32 | ow; float owf = (float)ow;
-            memcpy(dm_fps_state + 0x40, &osz, sizeof osz); memcpy(dm_fps_state + 0x48, &owf, sizeof owf);
+            memcpy(dm_fps_state + 0x300, &osz, sizeof osz); memcpy(dm_fps_state + 0x308, &owf, sizeof owf);
             LOG("%s: output %ux%u in place of %llux%llu (DM_RENDER_SCALE %.2f)", name, ow, oh, (unsigned long long)m->out_w, (unsigned long long)m->out_h, sc);
+        }
+    }
+    // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
+    // (Breath of the Wild 1.9.0's patches.py) render that shape: the output keeps its width (1920) and takes the height that gives the ratio, a multiple of 48 so the
+    // 2/3-size layout space (1280 wide) stays whole: 1.43 → 1920x1344 and 1280x896. State +0x48 u32 output height, +0x4c u32 layout height, +0x50 its float; 0 = 16:9
+    const char *as = getenv("DM_SCREEN_ASPECT");
+    if (as && *as && strcmp(as, "0")) {   // 0: 16:9
+        char *end; float a = strtof(as, &end);
+        if (end == as || *end || !(a >= 1.3f && a < 1.77f)) LOG("[RED] DM_SCREEN_ASPECT=%s: a width / height from 1.3 to 1.77; keeping 16:9", as);
+        else {
+            uint32_t oh = (uint32_t)(1920.0f / a / 48.0f + 0.5f) * 48, lh = oh * 2 / 3; float lf = (float)lh;
+            memcpy(dm_fps_state + 0x48, &oh, 4); memcpy(dm_fps_state + 0x4c, &lh, 4); memcpy(dm_fps_state + 0x50, &lf, 4);
+            const char *ms = getenv("DM_SCREEN_ASPECT_SITES"); uint32_t mask = ms ? (uint32_t)strtoul(ms, NULL, 0) : 0xffffffffu;   // the stubs of the game's own conversions, one bit each (+0x54)
+            memcpy(dm_fps_state + 0x54, &mask, 4);
+            if (ms) LOG("%s: screen shape: conversion sites %#x (DM_SCREEN_ASPECT_SITES)", name, mask);
+            // The field of view: views of the screen's ratio (the scene, the HUD's camera) keep 16:9's sides and show more above and below (patches.py's sead::PerspectiveProjection stubs)
+            float r = 1920.0f / (float)oh, k = (16.0f / 9.0f) / r, tol = 0.01f;
+            const char *fo = getenv("DM_SCREEN_FOV"); if (fo && !strcmp(fo, "off")) tol = -1.0f;   // trials: the scene keeps the game's vertical angle (no view matches); the HUD camera still widens
+            memcpy(dm_fps_state + 0x58, &r, 4); memcpy(dm_fps_state + 0x5c, &k, 4); memcpy(dm_fps_state + 0x60, &tol, 4);
+            float wide = 16.0f / 9.0f, wtol = 0.001f, far = 10000.0f;   // the HUD camera's projection: 16:9, near 1, far 10000 (+0x74 / +0x78 / +0x7c)
+            memcpy(dm_fps_state + 0x74, &wide, 4); memcpy(dm_fps_state + 0x78, &wtol, 4); memcpy(dm_fps_state + 0x7c, &far, 4);
+            // The HUD at the taller edges (patches.py duo_anchor.c, +0x80..+0x98): the shift (half the layout height over 360), the stretch of full-screen panes, the edge rule's
+            // distance, the listed corner widgets' distance, a full-screen pane's width and height in the 1280x720 space, and the tallest one still stretched (a menu's
+            // background is about 720 tall, the weapon wheel's gradient 1280; the map's tiles are left alone anyway)
+            // (Mac, a Master Mode save: an edge distance of 280 takes the menus' title bars (286 to 320), the map's frame pieces (284 to 360) and the bottom guides (-318) along
+            // as whole rows; 330 left the title bars and the rupee count in the middle while the hearts moved. Text moves with its widget since the rule runs where global
+            // matrices are computed. Only panes as wide and as tall as the screen are stretched: a width of 0 stretched the inventory's half-width side panel past its top
+            // and bottom bars). DM_SCREEN_HUD=<edge>,<listed>,<full-screen width>,<full-screen height>[,<tallest>]
+            // overrides them for trials
+            float anc[7] = {(float)lh / 2 - 360.0f, (float)lh / 720.0f, 280.0f, 100.0f, 1270.0f, 710.0f, 1300.0f};
+            const char *hv = getenv("DM_SCREEN_HUD");
+            if (hv && sscanf(hv, "%f,%f,%f,%f,%f", &anc[2], &anc[3], &anc[4], &anc[5], &anc[6]) < 4) LOG("[RED] DM_SCREEN_HUD=%s: <edge>,<listed>,<full width>,<full height>[,<tallest>]; keeping the rest", hv);
+            memcpy(dm_fps_state + 0x80, anc, sizeof anc);
+            LOG("%s: screen shape: HUD moves out by %.0f (edge %.0f, listed widgets %.0f), panes %.0fx%.0f or larger stretched %.3f", name, anc[0], anc[2], anc[3], anc[4], anc[5], anc[1]);
+            LOG("%s: screen shape %.3f: output 1920x%u, layout 1280x%u (DM_SCREEN_ASPECT; only builds with screen-shape stubs follow it)", name, a, oh, lh);
         }
     }
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
@@ -608,7 +684,11 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
     if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p → %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
     if ((cur & need) != need) die("%s permissions after vm_remap %#x, missing %#x", m->name, cur, need);
 }
-#define IMAGE_MH (&_mh_execute_header)
+// The image the module sections are read from (front.h dm_set_game_image_header). getsectiondata takes any loaded image's header and applies its slide
+#include "front.h"
+static const struct mach_header_64 *g_game_image = &_mh_execute_header;
+void dm_set_game_image_header(const void *mh) { g_game_image = mh; }
+#define IMAGE_MH g_game_image
 // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
 // take 294. gen_embed.py puts their pieces one after another, each 16K aligned, in __TEXT,__dm_nro_x0 / __DM_NRO_W,__img / __TEXT,__dm_nro_x1, and __DATA,__dm_nro_tab lists them:
 // 32 bytes of name, then the offset and length of its x0, W and x1 pieces in their sections (u64 each). A module name never holds an underscore, so these names meet no module's

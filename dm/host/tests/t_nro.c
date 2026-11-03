@@ -14,7 +14,6 @@ uint64_t resolve_import(module_t *m, const char *name) { (void)m; (void)name; re
 int hle_implements(const char *name) { (void)name; return 0; }
 int dm_mem_started(void) { return 0; }   // hle_svc.c: guest memory not laid out yet (dm_fps_state_apply)
 int svc_nro_deactivate(module_t *m) { m->loaded = 0; return 1; }   // no memory mappings in this fixture
-int dm_mem_started(void) { return 0; }   // hle_svc.c: guest memory not laid out yet (dm_fps_state_apply)
 
 typedef struct {
     Elf64_Sym sym[4];
