@@ -4,14 +4,18 @@ import SwiftUI
 import UIKit
 
 private let liveKeys: Set<String> = ["DM_ANISO", "DM_TRILINEAR", "DM_SHARPEN", "DM_PRESENT_UPSCALE", "DM_PRESENT_UPSCALE_OUT", "DM_QUALITY_AUTO",
-                                      "DM_THERMAL_CAP", "DM_FRAME_WG", "DM_SHOW_FPS"]
+                                      "DM_THERMAL_CAP", "DM_FRAME_WG", "DM_SHOW_FPS", "DM_RENDER_SCALE", "DM_FPS_TARGET"]
+// Render scale goes down at once; above the scale the game started with only from the next start (its render buffers were sized at boot)
+private let liveNotes: [String: String] = ["DM_RENDER_SCALE": "Lower takes effect now; higher than at start takes effect next time the game starts"]
+// The same value written two ways ("1.0" and "1.00" from a slider) is not a change
+private func same(_ s: Setting, _ a: String, _ b: String) -> Bool { s.kind == "range" ? abs((Double(a) ?? .nan) - (Double(b) ?? .nan)) < 1e-6 : a == b }
 
 private struct InGameSettingsView: View {
     @ObservedObject var m: LauncherModel
     let start: [String: String]
     let resume: () -> Void
 
-    private var pending: [Setting] { m.settings.filter { !liveKeys.contains($0.env) && (m.values[$0.env] ?? $0.def) != (start[$0.env] ?? $0.def) } }
+    private var pending: [Setting] { m.settings.filter { !liveKeys.contains($0.env) && !same($0, m.values[$0.env] ?? $0.def, start[$0.env] ?? $0.def) } }
 
     var body: some View {
         NavigationStack {
@@ -23,7 +27,9 @@ private struct InGameSettingsView: View {
                             ForEach(rows) { s in
                                 VStack(alignment: .leading, spacing: 2) {
                                     SettingRow(s: s, m: m)
-                                    if !liveKeys.contains(s.env) {
+                                    if let note = liveNotes[s.env] {
+                                        Text(note).font(.caption2).foregroundStyle(.secondary)
+                                    } else if !liveKeys.contains(s.env) {
                                         Text("Takes effect next time the game starts").font(.caption2).foregroundStyle(.secondary)
                                     }
                                 }
@@ -56,14 +62,19 @@ public func dmShowInGameSettings(_ viewController: UnsafeMutableRawPointer) {
           let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { return }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
     let model = LauncherModel(file.settings)
-    for s in file.settings where !model.fixed.contains(s.env) { if let v = getenv(s.env).map({ String(cString: $0) }) { model.values[s.env] = v } }   // what this run started with
+    // What applies now: a live setting as last changed in this run (dm_live_getenv), any other as saved for the next start, else as this run started
+    for s in file.settings where !model.fixed.contains(s.env) {
+        if liveKeys.contains(s.env), let v = dm_live_getenv(s.env).map({ String(cString: $0) }) { model.values[s.env] = v; continue }
+        if !model.ignoreSaved, let saved = UserDefaults.standard.object(forKey: "launcher." + s.env) as? String, s.accepts(saved) { model.values[s.env] = saved; continue }
+        if let v = getenv(s.env).map({ String(cString: $0) }) { model.values[s.env] = v }
+    }
     let start = model.values
     var host: UIViewController?
     let finish = {
         g_open = false
         for s in file.settings where !model.fixed.contains(s.env) {
             let v = model.values[s.env] ?? s.def
-            guard v != (start[s.env] ?? s.def) else { continue }
+            guard !same(s, v, start[s.env] ?? s.def) else { continue }
             if !model.ignoreSaved { if s.isDefault(v) { UserDefaults.standard.removeObject(forKey: "launcher." + s.env) } else { UserDefaults.standard.set(v, forKey: "launcher." + s.env) } }
             if liveKeys.contains(s.env) {
                 dm_live_set(s.env, v)

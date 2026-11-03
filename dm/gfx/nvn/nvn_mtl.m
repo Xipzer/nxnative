@@ -13469,5 +13469,16 @@ static void live_sync(void) {
         args_dirty_all();
         MLOG("live settings: anisotropy %g, trilinear %d; %d samplers made again", dm_aniso(), dm_trilinear(), n);
     }
+    // The frame-rate cap and the render scale live in the build's state page, which the game's stubs read every frame (adaptive quality changes the scale the same way). The scale
+    // cannot go above the one the game started with: the render buffer pool and the application memory were sized for it at boot (loader.c)
+    if (dm_fps_state) {
+        static float boot_rs = -1; if (boot_rs < 0) { const char *e = getenv("DM_RENDER_SCALE"); boot_rs = e ? strtof(e, NULL) : 1.0f; if (!(boot_rs > 0)) boot_rs = 1.0f; }
+        const char *e = dm_live_getenv("DM_RENDER_SCALE"); float cur; memcpy(&cur, dm_fps_state + 0x10, sizeof cur);
+        if (e && cur > 0) { float want = strtof(e, NULL), top = boot_rs > 1.0f ? boot_rs : 1.0f;
+            if (want > top) { MLOG("live settings: render scale %.2f is above the %.2f the game started with; %.2f until the next start", want, top, top); want = top; }
+            if (want >= 0.5f && want != cur) { memcpy(dm_fps_state + 0x10, &want, sizeof want); MLOG("live settings: render scale %.2f → %.2f", cur, want); } }
+        const char *f = dm_live_getenv("DM_FPS_TARGET"); float t; memcpy(&t, dm_fps_state, sizeof t);
+        if (f && t > 0) { float want = atoi(f) == 30 ? 30.0f : 60.0f; if (want != t) { uint32_t b; memcpy(&b, &want, sizeof b); __atomic_store_n((uint32_t *)dm_fps_state, b, __ATOMIC_RELAXED); MLOG("live settings: frame rate %.0f → %.0f", t, want); } }
+    }
     MLOG("live settings applied: sharpening %.2f, upscaling %s at %.2f, adaptive quality %d", sharpen_amount(), fx_mode() ? "metalfx" : "off", fx_out(), q_auto());
 }
