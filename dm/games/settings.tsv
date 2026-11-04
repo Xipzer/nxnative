@@ -21,28 +21,28 @@ DM_MFX_INTERP	choice	0=Off,2x=2x	0	DM_GAME_ID==01007EF00011E000	Game	Frame gener
 DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
 DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic
 DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Picture	Display mode		level=basic
-DM_WIDESCREEN	toggle	-	1	fixups:CAMERA_ASPECT	Picture	Widescreen	On a screen wider than 16:9 the game shows more of the world at the sides instead of black bars; the HUD keeps its shape.	level=basic
-DM_PICTURE_FIT	choice	fit=Fit (black bars),fill=Fill (crop edges)	fit	platform:ios	Picture	Picture fit	Fill crops the 16:9 picture to cover the screen; the HUD near the edges can be cut off. Widescreen, where a game has it, shows more of the world instead.
-DM_SCREEN_ASPECT	choice	0=Off (16:9),1.43=1.43:1 (iPhone Duo)	0	DM_GAME_SCREEN_ASPECT!=0	Picture	Taller picture	Renders a taller picture for a screen of that shape, about a quarter more pixels: a little slower and warmer.
 DM_RENDER_SCALE	range	0.5:DM_GAME_RENDER_SCALE_MAX:0.05	1.0	fixups:RENDER_SCALE	Picture	Render scale	Above 100% only as far as the game's own render target pools reach.	level=basic
 DM_RESCALE	range	0.5:2.0:0.05	1.0	gfxapi:nvn+!fixups:RENDER_SCALE	Picture	Render scale	The game's screen-sized images are drawn this many times larger. Above 100% uses more GPU time and memory.	level=basic
 DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Picture	Dynamic resolution	Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.
-DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Picture	Game's upscaler
 DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Picture	Upscaling	Uses more GPU time and can increase heat.
 DM_PRESENT_UPSCALE_OUT	range	1.0:4.0:0.1	1.0	always	Picture	Upscaling detail	Only with MetalFX upscaling. Uses more GPU time and can increase heat.	needs=DM_PRESENT_UPSCALE=metalfx
 DM_SHARPEN	range	0:1:0.05	0	always	Picture	Sharpening
+DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Picture	Game's upscaler
 DM_ANISO	choice	0=Off,2=2x,4=4x,8=8x,16=16x	0	gfxapi:nvn	Picture	Anisotropic filtering	Uses a little more GPU time.
 DM_TRILINEAR	toggle	-	0	gfxapi:nvn	Picture	Trilinear filtering
+DM_WIDESCREEN	toggle	-	1	fixups:CAMERA_ASPECT	Picture	Widescreen	On a screen wider than 16:9 the game shows more of the world at the sides instead of black bars; the HUD keeps its shape.	level=basic
+DM_SCREEN_ASPECT	choice	auto=Match screen,0=16:9 (Switch),1.43=iPhone Duo screen (1.43:1)	auto|0	DM_GAME_SCREEN_ASPECT!=0	Picture	Picture shape	Match screen fills a screen taller than 16:9 (iPad) with more of the world above and below. Renders about a quarter more pixels: a little slower and warmer.
+DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Picture	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off.
 DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
 DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1
 DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
 DM_FPS_HOLD	toggle	on/off	DM_GAME_FPS_HOLD	DM_GAME_FPS_TARGET!=0	Performance	Hold frames when late
-DM_THERMAL_CAP	toggle	-	1	DM_GAME_FPS_TARGET!=0	Performance	30 fps when hot	Holds 30 fps while iOS reports the device as hot, so it cools down. Off keeps 60 at the cost of heat and of the frames the slower GPU still drops.
+DM_THERMAL_CAP	toggle	-	1	DM_GAME_FPS_TARGET!=0	Performance	Halve when hot	Holds 30 fps while iOS reports the device as hot, so it cools down. Off keeps 60 at the cost of heat and of the frames the slower GPU still drops.
 DM_QUALITY_AUTO	toggle	-	0	gfxapi:nvn	Performance	Adaptive quality	Lowers upscaling detail, then render scale, while frames come late; raises them again when they fit.
 DM_FRAME_WG	toggle	-	0	gfxapi:nvn	Performance	Deadline boost	Tells iOS each frame's deadline, so it keeps the game on the fast cores at a higher clock. Uses more power and heat.
 DM_NVN_ENC_THREAD	toggle	-	1|DM_GAME_ENC_THREAD	gfxapi:nvn	Performance	Encode thread
-DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Present snapshots	Up to one frame more display latency.
+DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.
 DM_PSO_MTL4	toggle	-	DM_GAME_PSO_MTL4|1	gfxapi:nvn	Performance	Metal 4 pipelines	Keeps a pipeline archive; uses more memory.
 DM_PSO_PREBUILD	toggle	-	1	gfxapi:nvn	Performance	Pipeline prebuild	The first start waits a few minutes for it, once.	needs=DM_PSO_MTL4=1
 DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Performance	Frame-rate counter
