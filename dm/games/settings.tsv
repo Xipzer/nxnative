@@ -30,9 +30,7 @@ DM_SHARPEN	range	0:1:0.05	0	always	Picture	Sharpening
 DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Picture	Game's upscaler
 DM_ANISO	choice	0=Off,2=2x,4=4x,8=8x,16=16x	0	gfxapi:nvn	Picture	Anisotropic filtering	Uses a little more GPU time.
 DM_TRILINEAR	toggle	-	0	gfxapi:nvn	Picture	Trilinear filtering
-DM_WIDESCREEN	toggle	-	1	fixups:CAMERA_ASPECT	Picture	Widescreen	On a screen wider than 16:9 the game shows more of the world at the sides instead of black bars; the HUD keeps its shape.	level=basic
-DM_SCREEN_ASPECT	choice	auto=Match screen,0=16:9 (Switch),1.43=iPhone Duo screen (1.43:1)	auto|0	DM_GAME_SCREEN_ASPECT!=0	Picture	Picture shape	Match screen fills a screen taller than 16:9 (iPad) with more of the world above and below. Renders about a quarter more pixels: a little slower and warmer.
-DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Picture	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off.
+DM_SCREEN_MODE	choice	fill=Fill screen,fit=16:9 (original),crop=Zoom to fill	fill	platform:ios	Picture	Aspect ratio	Fill screen shows more of the world on a wider or taller screen where the game has the patch for it (Breath of the Wild; Tears of the Kingdom on wider screens), else the game's 16:9 picture with bars. Zoom to fill crops the edges instead.	level=basic
 DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
 DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
 DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1

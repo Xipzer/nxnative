@@ -172,6 +172,13 @@ static void launcher_done(void) { [g_root startGame]; }
     front_hud_env();   // before the process's first Metal device, which reads MTL_HUD_ENABLED (an env file's DM_METAL_HUD sets it in main.m already; GitHub issue #840)
     const char *dev = front_ios_device_check();   // that first device: a GPU without BC textures is refused here, not at launch, so the launcher's HUD switch counts
     if (dev) { [self showHint:[NSString stringWithFormat:@"This device is not supported.\n%s", dev]]; return; }   // the host does not start
+    {   // Aspect ratio (DM_SCREEN_MODE, the launcher's one setting for the picture's shape): fill = the whole screen, wider (Widescreen) or taller (Picture shape auto) where the
+        // build can draw it, else 16:9 fitted; fit = 16:9 with bars; crop = 16:9 zoomed to cover the screen, its edges cut. It sets the three switches below unless an env file did
+        const char *m = getenv("DM_SCREEN_MODE"); if (!m) m = "fill";
+        int fit = !strcmp(m, "fit"), crop = !strcmp(m, "crop");
+        setenv("DM_WIDESCREEN", fit || crop ? "0" : "1", 0); setenv("DM_SCREEN_ASPECT", fit || crop ? "0" : "auto", 0); setenv("DM_PICTURE_FIT", crop ? "fill" : "fit", 0);
+        LOG("front end: aspect ratio %s (DM_SCREEN_MODE): widescreen %s, picture shape %s, picture %s", m, getenv("DM_WIDESCREEN"), getenv("DM_SCREEN_ASPECT"), getenv("DM_PICTURE_FIT"));
+    }
     self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
     { const char *w = getenv("DM_WIDESCREEN"); g_widescreen = !(w && !strcmp(w, "0")); }
     {   // Picture shape "auto": the screen's own shape when it is taller than 16:9 and the build can draw one (an iPad's 4:3, an iPhone Duo's 1.43:1; loader.c takes 1.3 to
@@ -311,6 +318,11 @@ void front_picture_shape(int w, int h) {   // front.h: the views take the presen
 // dock (the operation mode change notification); while a TV shows the picture the game stays docked, and the choice applies when the TV is unplugged
 bool dm_setting_live(const char *env, const char *value) {
     if (!env || !g_root.game) return false;
+    if (!strcmp(env, "DM_SCREEN_MODE")) {   // Zoom to fill and 16:9 take effect at once; the camera of Fill screen follows the view's shape (loader.c dm_game_aspect_drawable) when the game started with it
+        if (value) { int fit = !strcmp(value, "fit"), crop = !strcmp(value, "crop"); g_root.fill = crop; g_widescreen = !fit && !crop; [g_root.view setNeedsLayout];
+            LOG("front end: aspect ratio %s (in-game menu)", value); }
+        return true;
+    }
     if (!strcmp(env, "DM_PICTURE_FIT")) {
         if (value) { g_root.fill = dm_picture_fill(value); [g_root.view setNeedsLayout]; LOG("front end: picture %s (in-game menu)", g_root.fill ? "Fill" : "Fit"); }
         return true;
