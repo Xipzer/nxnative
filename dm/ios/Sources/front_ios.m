@@ -102,8 +102,24 @@ static DmRootVC *g_root;
 // The launcher keeps each choice in UserDefaults, so last run's Performance HUD choice is readable before anything in the process has a Metal device: the host's loading
 // at app launch can make the first one before the launcher's settings reach startGame's front_hud_env, and Metal reads MTL_HUD_ENABLED only then (iPad: the HUD never
 // showed when switched on in the launcher). An explicit DM_METAL_HUD (env file) wins
+// The env files are read later (main.m), so the two lines that override the saved choice are looked for here: DM_METAL_HUD itself, and DM_SAVED_CHOICES=0 (a test run
+// that ignores the launcher's choices showed the HUD anyway)
+static int hud_env_file_says(const char *key, char *val, size_t n) {
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *res = NSBundle.mainBundle.resourcePath;
+    for (NSString *f in @[[doc stringByAppendingPathComponent:@"env.txt"], [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"env.txt"]]) {
+        NSString *t = [NSString stringWithContentsOfFile:f encoding:NSUTF8StringEncoding error:nil]; if (!t) continue;
+        for (NSString *line in [t componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+            NSString *l = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            NSRange eq = [l rangeOfString:@"="]; if ([l hasPrefix:@"#"] || eq.location == NSNotFound) continue;
+            if ([[l substringToIndex:eq.location] isEqualToString:@(key)]) { snprintf(val, n, "%s", [l substringFromIndex:eq.location + 1].UTF8String); return 1; }
+        }
+    }
+    return 0;
+}
 __attribute__((constructor)) static void hud_saved(void) {
     if (getenv("DM_METAL_HUD")) return;
+    char v[16]; if (hud_env_file_says("DM_METAL_HUD", v, sizeof v) || (hud_env_file_says("DM_SAVED_CHOICES", v, sizeof v) && !atoi(v))) return;
     NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"launcher.DM_METAL_HUD"];
     if (v.intValue) { setenv("MTL_HUD_ENABLED", "1", 0); setenv("MTL_HUD_HIDE_METALFX_METRICS", "1", 0); }
 }
