@@ -119,7 +119,7 @@ static int hud_env_file_says(const char *key, char *val, size_t n) {
 }
 __attribute__((constructor)) static void hud_saved(void) {
     if (getenv("DM_METAL_HUD")) return;
-    char v[16]; if (hud_env_file_says("DM_METAL_HUD", v, sizeof v) || (hud_env_file_says("DM_SAVED_CHOICES", v, sizeof v) && !atoi(v))) return;
+    char ev[16]; if (hud_env_file_says("DM_METAL_HUD", ev, sizeof ev) || (hud_env_file_says("DM_SAVED_CHOICES", ev, sizeof ev) && !atoi(ev))) return;
     NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"launcher.DM_METAL_HUD"];
     if (v.intValue) { setenv("MTL_HUD_ENABLED", "1", 0); setenv("MTL_HUD_HIDE_METALFX_METRICS", "1", 0); }
 }
