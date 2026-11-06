@@ -1,3 +1,3 @@
 // Generated file (dm/gfx/tools/dmsh_chain.py --header): the B shader library translation chain version this source tree expects (default options), one for every game;
 // the host loads only <library dir>/b-<V>/. Run dmsh_chain.py --header after changing the chain's tools and commit this file with the change
-#define DMSH_CHAIN "28834b5c0e15"
+#define DMSH_CHAIN "2539ee8a1a07"
