@@ -133,7 +133,10 @@ static void push(void) {
     if (!rx && !ry) { rx = g_mrx; ry = g_mry; }
     dm_input_set(g_btn | g_mbtn, lx, ly, rx, ry);
 }
-static void mouse_stick(int32_t rx, int32_t ry) { g_mrx = rx; g_mry = ry; push(); }
+static void mouse_stick(int32_t rx, int32_t ry) {
+    static int logged; if (logged < 3 && (rx || ry)) { logged++; LOG("front end: mouse camera stick %d %d", rx, ry); }
+    g_mrx = rx; g_mry = ry; push();
+}
 static void mouse_capture(int on) {
     if (on == g_mcap) return;
     g_mcap = on; CGAssociateMouseAndMouseCursorPosition(!on);   // captured: the pointer stays put and only the movement comes through
@@ -451,17 +454,13 @@ static int mouse_cam_button(int i, int down) {
     g_mbtn = down ? g_mbtn | g_mbits[i] : g_mbtn & ~g_mbits[i]; push();
     return 1;
 }
-static void mouse_cam_move(NSEvent *e) { if (g_mcap && g_input_on) ml_move(e.deltaX, -e.deltaY); }   // AppKit's deltaY grows downwards
-- (void)mouseMoved:(NSEvent *)e { mouse_cam_move(e); }
 - (void)rightMouseDown:(NSEvent *)e { if (!mouse_cam_button(1, 1)) [super rightMouseDown:e]; }
 - (void)rightMouseUp:(NSEvent *)e { if (!mouse_cam_button(1, 0)) [super rightMouseUp:e]; }
-- (void)rightMouseDragged:(NSEvent *)e { mouse_cam_move(e); }
 - (void)otherMouseDown:(NSEvent *)e { if (!mouse_cam_button(2, 1)) [super otherMouseDown:e]; }
 - (void)otherMouseUp:(NSEvent *)e { if (!mouse_cam_button(2, 0)) [super otherMouseUp:e]; }
-- (void)otherMouseDragged:(NSEvent *)e { mouse_cam_move(e); }
 - (void)mouseDown:(NSEvent *)e { if (mouse_cam_button(0, 1)) return; [self mouseDragged:e]; }
 - (void)mouseDragged:(NSEvent *)e {
-    if (g_mouse_cam) { mouse_cam_move(e); return; }
+    if (g_mouse_cam) return;   // the movement monitor has it (mouse_cam_monitor)
     if (!g_input_on) return;
     NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
     double w = b.width, h = b.height;
@@ -1440,6 +1439,10 @@ void front_run(void (*guest)(void)) {
         pads_start();
         { const char *m = getenv("DM_MOUSE"); g_mouse_cam = m && *m ? atoi(m) != 0 : DM_GAME_MOUSE; }
         if (g_mouse_cam) { win.acceptsMouseMovedEvents = YES; ml_buttons(DM_GAME_MOUSE_BUTTONS, g_mbits); ml_init(mouse_stick);
+            // AppKit sends mouse-moved events to the first responder, not the view under the pointer, so the movement is taken here (with and without a button held)
+            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged handler:^NSEvent *(NSEvent *e) {
+                if (g_mcap && g_input_on && e.window == win) ml_move(e.deltaX, -e.deltaY);   // AppKit's deltaY grows downwards
+                return e; }];
             LOG("front end: mouse turns the camera once a click on the picture captures it (DM_MOUSE=1; buttons %#llx %#llx %#llx)", g_mbits[0], g_mbits[1], g_mbits[2]); }
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
