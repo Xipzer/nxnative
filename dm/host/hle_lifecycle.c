@@ -7,11 +7,11 @@
 #include <signal.h>
 #include <unistd.h>
 void hlecount_flush(void); void dm_rec_finish(void);
-void dm_host_shutdown(const char *why) {
+void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) {
     static _Atomic int once; if (atomic_exchange(&once, 1)) return;
     uint64_t t0 = now_ns(); LOG("received %s: graceful exit", why);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
-        LOG("[RED] graceful exit not done in 1.5 seconds, exiting at once"); _exit(0); });
+        LOG("[RED] graceful exit not done in 1.5 seconds, exiting at once"); if (then) then(arg); _exit(0); });
     hlecount_flush();                               // DM_HLECOUNT: _exit does not run atexit, write a copy here
     dm_rec_finish();                                // DM_REC: the held state and the buffered steps (hle_hid.c)
     dm_cheats_exit();                               // a clean exit: no safe mode for the cheats at the next launch (atexit does not run either)
@@ -21,8 +21,10 @@ void dm_host_shutdown(const char *why) {
     { int __llvm_profile_write_file(void); __llvm_profile_write_file(); }
 #endif   // a profiling build (-fprofile-instr-generate): _exit skips the profile's atexit writer
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
+    if (then) then(arg);
     _exit(0);
 }
+void dm_host_shutdown(const char *why) { dm_host_shutdown_then(why, NULL, NULL); }
 void dm_term_install(void) {
     signal(SIGTERM, SIG_IGN);                       // do not take the default action: hand over to the GCD signal source to wrap up on an ordinary thread
     static dispatch_source_t src;
