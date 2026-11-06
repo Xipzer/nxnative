@@ -14488,11 +14488,15 @@ static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTe
     }
     id<MTL4ComputeCommandEncoder> ce = [cb computeCommandEncoder];
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work
-    [ce copyFromTexture:raw sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(r[0], r[1], 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:fx->in destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
-    [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the scaler's encoders come after the copy
+    // The picture at the swapchain texture's origin, in a texture the scaler can read: it reads that texture, no copy (the copy only moved the rectangle to the origin)
+    static int inp_ok = -1; if (inp_ok < 0) { const char *e = getenv("DM_FX_INPLACE"); inp_ok = !(e && !strcmp(e, "0")); }
+    int in_place = inp_ok && !r[0] && !r[1] && raw.width == cw && raw.height == ch && raw.pixelFormat == fx->in.pixelFormat && (raw.usage & fx->sc.colorTextureUsage) == fx->sc.colorTextureUsage && raw.storageMode == MTLStorageModePrivate;
+    if (!in_place) [ce copyFromTexture:raw sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(r[0], r[1], 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:fx->in destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the scaler's encoders come after the copy (or the frame's work)
     [ce endEncoding];
+    { static int once; if (in_place && !once++) MLOG("present upscaling: MetalFX reads the swapchain texture in place (%lux%lu of %lux%lu), no copy", (unsigned long)cw, (unsigned long)ch, (unsigned long)raw.width, (unsigned long)raw.height); }
     int dir = direct && direct.width == ow && direct.height == oh && direct.pixelFormat == out_pf && (direct.usage & fx->sc.outputTextureUsage) == fx->sc.outputTextureUsage;
-    fx->sc.colorTexture = fx->in; fx->sc.inputContentWidth = cw; fx->sc.inputContentHeight = ch; fx->sc.outputTexture = dir ? direct : fx->out;
+    fx->sc.colorTexture = in_place ? raw : fx->in; fx->sc.inputContentWidth = cw; fx->sc.inputContentHeight = ch; fx->sc.outputTexture = dir ? direct : fx->out;
     [fx->sc encodeToCommandBuffer:cb];
     if (direct && !dir) { static int nl; if (!nl++) MLOG("present upscaling: MetalFX cannot write the drawable (%lux%lu format %lu usage %#lx storage %lu; scaler output %lux%lu format %lu usage %#lx)",
         (unsigned long)direct.width, (unsigned long)direct.height, (unsigned long)direct.pixelFormat, (unsigned long)direct.usage, (unsigned long)direct.storageMode, (unsigned long)ow, (unsigned long)oh, (unsigned long)out_pf, (unsigned long)fx->sc.outputTextureUsage); }
