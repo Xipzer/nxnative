@@ -1,4 +1,4 @@
-// The in-game menu, opened by the gamepad's menu button at the top centre (DmGamepad.m): the controller layout, then the settings-screen settings the running game takes at once
+// The in-game menu, opened by the gamepad's menu button at the top centre (DmGamepad.m): the controller layout and Controls… (the bindings, ControlsView.swift), then the settings-screen settings the running game takes at once
 // (front_ios.m dm_setting_live), grouped as on the settings screen but without its headings, one row each, so the menu stays short over the game (its text size is fixed: front_ios.m
 // startGame). A pick is saved as Play saves it (LauncherModel.choose), so the settings screen shows it at the next start; a setting an env file fixes is shown, not changed. Settings
 // that need the next start (language, pipelines, the frame rate and so on), and the sliders, stay on the settings screen, which the menu's title points to.
@@ -19,17 +19,18 @@ private func gameMenuItems() -> [UIMenuElement] {
         UIAction(title: names[l], state: dm_pad_layout() == l ? .on : .off) { _ in dm_pad_layout_set(Int32(l)) }
     }
     let layout = UIMenu(title: "Controller layout", options: .singleSelection, children: layouts)   // a choice's value shows in its submenu: a subtitle would make each row two lines
+    let controls = UIAction(title: "Controls…", image: UIImage(systemName: "keyboard")) { _ in presentControls() }   // keys, mouse and controller buttons
     var items: [UIMenuElement] = []
     var placed = false
     if let m = gameMenuModel {
         for section in m.sections {
-            var rows: [UIMenuElement] = section == "Controls" ? [layout] : []
+            var rows: [UIMenuElement] = section == "Controls" ? [layout, controls] : []
             if section == "Controls" { placed = true }
             for s in m.rows(in: section) where (s.kind == "choice" || s.kind == "toggle" || s.kind == "range") && dm_setting_live(s.env, nil) { rows.append(gameMenuRow(m, s)) }
             if !rows.isEmpty { items.append(UIMenu(options: .displayInline, children: rows)) }
         }
     }
-    if !placed { items.insert(UIMenu(options: .displayInline, children: [layout]), at: 0) }
+    if !placed { items.insert(UIMenu(options: .displayInline, children: [layout, controls]), at: 0) }
     return items
 }
 

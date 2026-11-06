@@ -12,6 +12,7 @@ Update 1.9.0 (v1114112) over the base game, SDK 20.5.22. Nintendo EPD's engine (
 | `gpu_timestamps segment` | `game.tsv` | the interval controller and the dynamic resolution read the GPU time between the frame's two timestamp reports |
 | Integer output rows `8e2cc2671cae6020`, `93aa5e22a8202409` | [`shader_facts_manual.tsv`](shader_facts_manual.tsv) | agl's BC4 block encoder (3D and 2D source) writes `uint`; no PC version gives output types |
 | `pad_layout full` | `game.tsv` | the 3D gamepad layout: the right stick turns the camera |
+| `key_binds kb:LeftShift=B kb:Space=X kb:H=SHAKE` | `game.tsv` | keyboard play as on a PC: Shift sprints (B), Space jumps (X), shaking the controller moves to H; the mouse keeps `mouse_buttons`' default, left click Y (attack), right click ZL (lock on, shield) ([Keyboard, mouse and controller](../../../docs/settings.md#keyboard-mouse-and-controller)) |
 | 4 GB layout: `mem_reserve 0x100000000`, `mem_alias 0x10000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | no system resource in the NPDM: the game uses `SetHeapSize`. 13 Sentinels' partition (256 MB in front + 256 MB alias + 256 MB stack + 3.25 GB heap) |
 | Node area cut 1 GB → 62 MB | `dm/tools/sdk_patches.py` SDK-wide rules, `sdk` build `574284b4…` | made for Tears of the Kingdom's issue #70 on the same `sdk` build; the SDK-wide rule gives it |
 

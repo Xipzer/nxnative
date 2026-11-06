@@ -120,6 +120,7 @@ private struct LauncherView: View {
                         if !rows.isEmpty {
                             Section(section) {
                                 ForEach(rows) { SettingRow(s: $0, m: m) }
+                                if section == "Controls" { ControlsEntry { .forThisGame() } }   // the bindings (ControlsView.swift), also in the in-game menu
                             }
                         }
                     }

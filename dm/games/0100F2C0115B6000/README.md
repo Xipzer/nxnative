@@ -15,6 +15,7 @@ Update 1.4.3 (v720896) over the base game, SDK 20.5.22. Nintendo EPD's engine (s
 | Integer output rows | [`shader_facts_manual.tsv`](shader_facts_manual.tsv) | no PC version, so the translator has no output types: agl's BC4 encoder and the Ultrahand mask (`e3fb0bb58a691e10`, R8Uint, from PR #11; the Mac route does not reach it) |
 | Drawable-driven camera aspect, `CAMERA_ASPECT` | `patches.py`, shared loader / NVN aspect support | exact 1.4.3 build only; widens the world camera before filling a wider display, rather than stretching the original framing; see [Widescreen camera](#widescreen-camera) |
 | `pad_layout full` | `game.tsv` | the 3D gamepad layout: the right stick turns the camera |
+| `key_binds kb:LeftShift=B kb:Space=X kb:H=SHAKE` | `game.tsv` | keyboard play as on a PC: Shift sprints (B), Space jumps (X), shaking the controller moves to H; the mouse keeps `mouse_buttons`' default, left click Y (attack), right click ZL (lock on, shield) ([Keyboard, mouse and controller](../../../docs/settings.md#keyboard-mouse-and-controller)) |
 
 ## Frame rate
 

@@ -136,7 +136,8 @@ def build(gid, patched, control):
             s.update(on=on_off[0], off=on_off[1], default=on_off[0] if s['default'] == '1' else on_off[1])   # the default as the value the variable takes
         else: sys.exit(f'settings.tsv:{n}: unknown kind {kind}')
         out.append(s)
-    return {'schema': SCHEMA, 'game': g.id, 'settings': out}
+    # The game's bindings over dm/host/keymap.h's base map (mouse_buttons, key_binds), for a Controls screen's defaults (the Mac window's; the iPhone app has them compiled in)
+    return {'schema': SCHEMA, 'game': g.id, 'settings': out, 'key_binds': game.key_binds_text(g)}
 
 
 if __name__ == '__main__':

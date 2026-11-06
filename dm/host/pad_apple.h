@@ -19,3 +19,14 @@ static inline uint64_t dm_pad_face(GCExtendedGamepad *g) {
     if (!dm_pad_labelled(g.controller)) { GCControllerButtonInput *t = a; a = b; b = t; t = x; x = y; y = t; }   // by position: right A, bottom B, top X, left Y
     return (a.isPressed ? DM_BTN_A : 0) | (b.isPressed ? DM_BTN_B : 0) | (x.isPressed ? DM_BTN_X : 0) | (y.isPressed ? DM_BTN_Y : 0);
 }
+// Every pressed element as the Switch button it is by default: the face buttons by dm_pad_face, shoulders L R, triggers ZL ZR, Menu +, Options −, the stick presses, the D-pad.
+// These are keymap.h's controller elements (bit i: KM_PAD + i), which km_pad turns into what the player bound them to. An element the pad lacks is nil: not pressed
+static inline uint32_t dm_pad_elements(GCExtendedGamepad *g) {
+    uint32_t m = (uint32_t)dm_pad_face(g);
+    #define K(btn, bit) if (btn.isPressed) m |= bit
+    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
+    K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);
+    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+    #undef K
+    return m;
+}

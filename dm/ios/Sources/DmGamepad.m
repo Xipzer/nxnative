@@ -15,7 +15,8 @@
 //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 //   A hardware keyboard (Magic Keyboard, Smart Keyboard, Bluetooth) plays with the Mac's key map, and a mouse or trackpad turns the camera with the pointer locked (Mouse: Camera);
-//   the touch controls hide while either is used and come back at the next finger touch; see "Keyboard, mouse and trackpad" below.
+//   the touch controls hide while either is used and come back at the next finger touch; see "Keyboard, mouse and trackpad" below. Keys, mouse buttons and controller buttons go
+//   through the player's bindings (keymap.h), which the Controls screen (ControlsView.swift) changes while the game runs; see "Bindings" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <CoreMotion/CoreMotion.h>
@@ -30,10 +31,13 @@
 #include "motion_fusion.h"
 #include "pad_apple.h"
 #include "mouse_look.h"
+#define KM_API   // the Controls screen's calls (keymap_api.h) are defined here
+#include "keymap.h"
 #include "pad_slots.h"
 #include <stdatomic.h>
 #import "DmLayout.h"
 #import "DmGameMenu.h"
+#import "DmControls.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
 enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
@@ -41,13 +45,13 @@ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_GAME };   // which control 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_touch_btn, g_shake_btn;
 static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry;
-static uint64_t g_kb_btn, g_ms_btn;      // the keyboard's and the mouse's buttons (main thread)
+static uint64_t g_kb_btn;               // the keyboard's and the mouse's buttons (main thread, kbm_sync)
 static int32_t g_kb_lx, g_kb_ly, g_kb_rx, g_kb_ry, g_ms_rx, g_ms_ry;
 static int32_t stick_pick(int32_t a, int32_t b) { return abs(a) >= abs(b) ? a : b; }
 static void publish(void) {   // the touch gamepad, the keyboard, the mouse and the shake; the host ORs them with player 1's controller and takes whichever stick is deflected more (hle_hid.c)
     pthread_mutex_lock(&g_mu);
     int32_t rx = g_kb_rx || g_kb_ry ? g_kb_rx : stick_pick(g_ms_rx, g_touch_rx), ry = g_kb_rx || g_kb_ry ? g_kb_ry : stick_pick(g_ms_ry, g_touch_ry);
-    dm_input_set(g_touch_btn | g_shake_btn | g_kb_btn | g_ms_btn, stick_pick(g_kb_lx, g_touch_lx), stick_pick(g_kb_ly, g_touch_ly), rx, ry);
+    dm_input_set(g_touch_btn | g_shake_btn | g_kb_btn, stick_pick(g_kb_lx, g_touch_lx), stick_pick(g_kb_ly, g_touch_ly), rx, ry);
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -572,24 +576,30 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 }
 
 // ---- Keyboard, mouse and trackpad ----
-// A hardware keyboard (GCKeyboard) plays player 1 with the Mac's key map (front_mac.m): WASD the left stick, the arrow keys the D-pad (with Shift held: the right stick),
-// J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller. Keys pressed with ⌘ held are the system's.
+// A hardware keyboard (GCKeyboard) plays player 1 with the Mac's key map (front_mac.m, keymap.h KM_BASE): WASD the left stick, the arrow keys the D-pad (with Shift held: the right stick),
+// J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller; then the profile's key_binds and the player's bindings ("Bindings" below).
+// Keys pressed with ⌘ held are the system's.
 // Mouse: Camera (DM_MOUSE=1, the profile's mouse: camera in 3D games; mouse_look.h): the scene's pointer is locked (the root view controller's prefersPointerLocked,
-// dm_kbm_pointer_lock), a mouse's or the trackpad's movement (GCMouse) is the right stick and its buttons the profile's mouse_buttons. Esc (or `) frees the pointer, and so does
-// opening the in-game menu; a click on the picture locks it again. iPadOS locks it only while the app fills the screen (not in Split View or a Stage Manager window): there,
-// and with Mouse: Touch screen, the pointer is a finger on the touch screen, as before
+// dm_kbm_pointer_lock), a mouse's or the trackpad's movement (GCMouse) is the right stick and its buttons what the map binds them to (the profile's mouse_buttons). Esc (or ` while it is
+// not bound) frees the pointer, and so does opening the in-game menu; a click on the picture locks it again. iPadOS locks it only while the app fills the screen (not in Split View or a
+// Stage Manager window): there, and with Mouse: Touch screen, the pointer is a finger on the touch screen, as before
 static int g_mouse_cam;                 // DM_MOUSE
 static BOOL g_ptr_freed;                // Esc or the menu freed the pointer: no lock until a click on the picture
 static BOOL g_ptr_locked;               // the scene's pointer lock state
-static uint64_t g_mbits[3];             // the mouse's left, right and middle buttons (ml_buttons)
-static int g_kb_w, g_kb_a, g_kb_s, g_kb_d, g_kb_rl, g_kb_ru, g_kb_rr, g_kb_rd;
+static km_map g_map;                    // the bindings (keymap.h): the game's, then the player's
+static km_held g_kbm;                   // the keys and mouse buttons held, and what each pressed
+static void (*g_capture)(const char *token);   // the Controls screen is open: every key, mouse button and controller button goes to it, none to the game
 static int g_mouse_n;                   // mice and trackpads connected
 static void kbm_lock_update(void) {
     UIViewController *vc = g_view.window.rootViewController;
     if (vc) [vc setNeedsUpdateOfPrefersPointerLocked];
 }
-bool dm_kbm_pointer_lock(void) { return g_mouse_cam && g_mouse_n > 0 && !g_ptr_freed; }   // front_ios.m DmRootVC prefersPointerLocked
-static void kbm_mouse_release(void) { g_ms_btn = 0; ml_stop(); }
+bool dm_kbm_pointer_lock(void) { return g_mouse_cam && g_mouse_n > 0 && !g_ptr_freed && !g_capture; }   // front_ios.m DmRootVC prefersPointerLocked
+static void kbm_sync(void) {   // what the keys and mouse buttons hold, for publish
+    int32_t ax[4]; km_sticks(g_kbm.held, ax);
+    g_kb_btn = km_buttons(g_kbm.held); g_kb_lx = ax[0]; g_kb_ly = ax[1]; g_kb_rx = ax[2]; g_kb_ry = ax[3];
+}
+static void kbm_mouse_release(void) { km_release(&g_kbm, KM_MOUSE, KM_PAD); kbm_sync(); ml_stop(); }
 static void kbm_free_pointer(void) { if (g_ptr_freed || !g_mouse_cam) return; g_ptr_freed = YES; kbm_mouse_release(); publish(); kbm_lock_update(); }
 static BOOL kbm_pointer_click(void) {   // a pointer touch on the view (not the menu button): locks the pointer again, never reaches a control or the game
     if (!g_mouse_cam || !g_mouse_n) return NO;
@@ -597,47 +607,35 @@ static BOOL kbm_pointer_click(void) {   // a pointer touch on the view (not the 
     return YES;
 }
 static void ms_stick(int32_t rx, int32_t ry) { g_ms_rx = rx; g_ms_ry = ry; publish(); }
-static int kb_bit(GCKeyCode k) {
-    if (k == GCKeyCodeKeyJ) return B_A; if (k == GCKeyCodeKeyK) return B_B; if (k == GCKeyCodeKeyU) return B_X; if (k == GCKeyCodeKeyI) return B_Y;
-    if (k == GCKeyCodeKeyF) return B_LS; if (k == GCKeyCodeKeyG) return B_RS;
-    if (k == GCKeyCodeKeyQ) return B_L; if (k == GCKeyCodeKeyE) return B_R; if (k == GCKeyCodeKeyZ) return B_ZL; if (k == GCKeyCodeKeyC) return B_ZR;
-    if (k == GCKeyCodeReturnOrEnter || k == GCKeyCodeKeypadEnter) return B_PLUS; if (k == GCKeyCodeTab) return B_MINUS;
-    if (k == GCKeyCodeLeftArrow) return B_LEFT; if (k == GCKeyCodeUpArrow) return B_UP; if (k == GCKeyCodeRightArrow) return B_RIGHT; if (k == GCKeyCodeDownArrow) return B_DOWN;
-    return -1;
-}
 static void kb_key(GCKeyboardInput *kb, GCKeyCode k, BOOL down) {
-    if (down && ([kb buttonForKeyCode:GCKeyCodeLeftGUI].isPressed || [kb buttonForKeyCode:GCKeyCodeRightGUI].isPressed)) return;   // ⌘ shortcuts are the system's
-    if (k == GCKeyCodeEscape || k == GCKeyCodeGraveAccentAndTilde) { if (down) kbm_free_pointer(); return; }
-    int *ax = k == GCKeyCodeKeyW ? &g_kb_w : k == GCKeyCodeKeyA ? &g_kb_a : k == GCKeyCodeKeyS ? &g_kb_s : k == GCKeyCodeKeyD ? &g_kb_d : NULL;
-    // an arrow pressed with Shift held is the right stick until it is released, as on the Mac
-    int *rs = k == GCKeyCodeLeftArrow ? &g_kb_rl : k == GCKeyCodeUpArrow ? &g_kb_ru : k == GCKeyCodeRightArrow ? &g_kb_rr : k == GCKeyCodeDownArrow ? &g_kb_rd : NULL;
+    BOOL cmd = [kb buttonForKeyCode:GCKeyCodeLeftGUI].isPressed || [kb buttonForKeyCode:GCKeyCodeRightGUI].isPressed;
+    if (g_capture) { const char *t = down && !cmd ? dm_km_hid_key((int)k) : NULL; if (t) g_capture(t); return; }
+    if (down && cmd) return;   // ⌘ shortcuts are the system's
+    if (k == GCKeyCodeEscape || (k == GCKeyCodeGraveAccentAndTilde && !g_map.out[k])) { if (down) kbm_free_pointer(); return; }
+    if (k <= 0 || k >= KM_MOUSE) return;
+    // an arrow pressed with Shift held is the right stick until it is released, as on the Mac, while no Shift key is bound (km_shift_arrow)
     BOOL shift = [kb buttonForKeyCode:GCKeyCodeLeftShift].isPressed || [kb buttonForKeyCode:GCKeyCodeRightShift].isPressed;
-    uint64_t m = 0;
-    if (ax) *ax = down;
-    else if (rs && (down ? shift : *rs)) *rs = down;
-    else { int b = kb_bit(k); m = b >= 0 ? 1ull << b : k == GCKeyCodeSpacebar ? DM_BTN_SHAKE : 0; if (!m) return; }
-    g_kb_btn = down ? g_kb_btn | m : g_kb_btn & ~m;
-    g_kb_lx = (g_kb_d - g_kb_a) * DM_STICK_MAX; g_kb_ly = (g_kb_w - g_kb_s) * DM_STICK_MAX;
-    g_kb_rx = (g_kb_rr - g_kb_rl) * DM_STICK_MAX; g_kb_ry = (g_kb_ru - g_kb_rd) * DM_STICK_MAX;
-    publish();
+    int rs = down && shift ? km_shift_arrow(&g_map, (int)k) : 0;
+    if (!(rs ? km_press_as(&g_kbm, (int)k, rs, down) : km_press(&g_kbm, &g_map, (int)k, down))) return;   // unbound, or already so
+    kbm_sync(); publish();
     if (down) [g_view kbmUsed];
 }
 static void kb_attach(GCKeyboard *kb) {
     if (!kb) return;
     kb.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *in, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) { (void)key; kb_key(in, code, pressed); };
 }
-static void kb_release(void) {
-    g_kb_btn = 0; g_kb_w = g_kb_a = g_kb_s = g_kb_d = g_kb_rl = g_kb_ru = g_kb_rr = g_kb_rd = 0; g_kb_lx = g_kb_ly = g_kb_rx = g_kb_ry = 0;
-}
+static void kb_release(void) { km_release(&g_kbm, KM_KB, KM_MOUSE); kbm_sync(); }
 static void ms_button(int i, BOOL down) {
+    if (g_capture) { if (down && i) g_capture(i == 1 ? "mouse:right" : "mouse:middle"); return; }   // a left click is the screen's own (its click box reports it)
     if (!g_ptr_locked) return;   // a free pointer's clicks are touches (or lock it again, kbm_pointer_click)
-    g_ms_btn = down ? g_ms_btn | g_mbits[i] : g_ms_btn & ~g_mbits[i]; publish();
+    if (!km_press(&g_kbm, &g_map, KM_MOUSE + i, down)) return;
+    kbm_sync(); publish();
     if (down) [g_view kbmUsed];
 }
 static void ms_attach(GCMouse *m) {
     GCMouseInput *in = m.mouseInput; if (!in) return;
     in.mouseMovedHandler = ^(GCMouseInput *mi, float dx, float dy) { (void)mi;
-        if (!g_ptr_locked) return;
+        if (!g_ptr_locked || g_capture) return;
         static int logged; if (logged < 3 && (fabsf(dx) > 2 || fabsf(dy) > 2)) { logged++; LOG("front end: mouse movement %.1f %.1f (y > 0: up)", dx, dy); }
         ml_move(dx, dy); [g_view kbmUsed]; };   // GameController's mouse movement grows upwards
     in.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { (void)b; (void)v; ms_button(0, p); };
@@ -653,9 +651,9 @@ void dm_kbm_set_mouse(int camera) {   // the in-game menu's Mouse
     if (camera == g_mouse_cam) return;
     g_mouse_cam = camera; g_ptr_freed = NO; kbm_mouse_release(); publish(); kbm_lock_update();
 }
-static void kbm_start(void) {
-    const char *e = getenv("DM_MOUSE"); g_mouse_cam = e && *e ? atoi(e) != 0 : DM_GAME_MOUSE;
-    ml_buttons(DM_GAME_MOUSE_BUTTONS, g_mbits); ml_init(ms_stick);
+// The keyboards and mice, once: at the game's start (kbm_start), or earlier when the settings screen's Controls listens for a key (dm_keymap_capture)
+static void kbm_devices(void) {
+    static BOOL done; if (done) return; done = YES;
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     kb_attach(GCKeyboard.coalescedKeyboard);
     [nc addObserverForName:GCKeyboardDidConnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
@@ -667,12 +665,18 @@ static void kbm_start(void) {
         g_mouse_n++; LOG("front end: mouse or trackpad connected (%d)", g_mouse_n); ms_attach(n.object); kbm_lock_update(); }];
     [nc addObserverForName:GCMouseDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
         (void)n; if (g_mouse_n > 0) g_mouse_n--; LOG("front end: mouse or trackpad disconnected (%d left)", g_mouse_n); kbm_mouse_release(); publish(); kbm_lock_update(); }];
-    [nc addObserverForName:UIPointerLockStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+}
+static void keymap_load(void);   // Bindings, below
+static void kbm_start(void) {
+    const char *e = getenv("DM_MOUSE"); g_mouse_cam = e && *e ? atoi(e) != 0 : DM_GAME_MOUSE;
+    ml_init(ms_stick);
+    keymap_load();
+    kbm_devices();
+    [NSNotificationCenter.defaultCenter addObserverForName:UIPointerLockStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
         UIWindowScene *ws = g_view.window.windowScene; UIScene *sc = n.userInfo[UIPointerLockStateSceneUserInfoKey];
         if (!ws || (sc && sc != ws)) return;
         kbm_lock_changed(ws.pointerLockState); }];
-    LOG("front end: keyboard plays player 1; mouse %s (DM_MOUSE; buttons %#llx %#llx %#llx), %d connected", g_mouse_cam ? "turns the camera with the pointer locked" : "is the touch screen",
-        g_mbits[0], g_mbits[1], g_mbits[2], (int)GCMouse.mice.count);
+    LOG("front end: keyboard plays player 1; mouse %s (DM_MOUSE), %d connected", g_mouse_cam ? "turns the camera with the pointer locked" : "is the touch screen", (int)GCMouse.mice.count);
     dispatch_async(dispatch_get_main_queue(), ^{ kbm_lock_update(); });   // once the view is in its window
 }
 static void kbm_reset(void) { kb_release(); kbm_mouse_release(); }
@@ -686,18 +690,14 @@ static pad_slots g_slots;
 static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
 static int g_merge;
 static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+static void pad_capture(GCExtendedGamepad *g);   // Bindings, below
 static void read_pad(GCExtendedGamepad *g) {
+    if (g_capture) { pad_capture(g); return; }
     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)g.controller); if (p < 0) return;
     dm_haptics_apple_controller(p, g.controller);
-    _Static_assert(DM_BTN_A == 1u << B_A && DM_BTN_B == 1u << B_B && DM_BTN_X == 1u << B_X && DM_BTN_Y == 1u << B_Y, "face button bits");
-    uint64_t m = dm_pad_face(g);   // by position, a Nintendo pad by its labels
-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
-    #undef K
-    dm_pad_set_player(p, m, axis(g.leftThumbstick.xAxis.value), axis(g.leftThumbstick.yAxis.value), axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value));
+    int32_t ax[4] = {axis(g.leftThumbstick.xAxis.value), axis(g.leftThumbstick.yAxis.value), axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value)};
+    uint64_t m = km_pad(&g_map, dm_pad_elements(g), ax);   // face buttons by position, a Nintendo pad by its labels (pad_apple.h); then the player's bindings
+    dm_pad_set_player(p, m, ax[0], ax[1], ax[2], ax[3]);
 }
 // Home and Capture: without this iOS takes them as system gestures (Home opens the Games overlay, Capture a screenshot); the app gives them no function
 static void pad_keep_system_buttons(GCController *c) { for (NSString *b in @[GCInputButtonHome, GCInputButtonShare]) c.physicalInputProfile.buttons[b].preferredSystemGestureState = GCSystemGestureStateDisabled; }
@@ -764,4 +764,67 @@ void dm_gamepad_reset(void) {   // On resign active: release everything (a key h
     pthread_mutex_lock(&g_mu); g_shake_btn = 0; pthread_mutex_unlock(&g_mu); publish();
     if (g_merge) dm_pad_set(0, 0, 0, 0, 0);
     else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p]) dm_pad_set_player(p, 0, 0, 0, 0, 0);
+}
+
+// ---- Bindings ----
+// The keyboard's keys, the mouse's buttons and the controllers' buttons go through one map (keymap.h): the base map, the profile's mouse_buttons and key_binds, then the player's
+// bindings: DM_KEYMAP when an env file sets it, else the Controls screen's (ControlsView.swift), kept in this app's UserDefaults as controls.keymap (each game is its own app, so per game;
+// DM_SAVED_CHOICES=0 ignores it). The Controls screen changes them while the game runs (dm_keymap_set, at once), and while it is open it takes every key, mouse button and controller
+// button itself (dm_keymap_capture): none reaches the game, and the pointer is free
+static char g_player[4096];   // the player's bindings now (keymap.h's text, over the game's)
+static BOOL g_map_loaded;
+static void keymap_game(km_map *m) { uint64_t b[3]; ml_buttons(DM_GAME_MOUSE_BUTTONS, b); km_game(m, b, DM_GAME_KEY_BINDS); }
+static void keymap_apply(const char *player, const char *from) {
+    km_map m; keymap_game(&m);
+    char bad[64]; int nb = km_parse(&m, player, bad, sizeof bad);
+    if (nb) LOG("[RED] front end: bindings (%s): %d not understood, the first \"%s\"", from, nb, bad);
+    snprintf(g_player, sizeof g_player, "%s", player ? player : "");
+    g_map = m; g_map_loaded = YES;
+    km_release(&g_kbm, 0, KM_NIN); kbm_sync(); publish();   // nothing pressed under the old map stays pressed
+    if (*g_player) LOG("front end: the player's bindings (%s): %s", from, g_player);
+}
+static void keymap_load(void) {
+    const char *e = getenv("DM_KEYMAP"), *saved = getenv("DM_SAVED_CHOICES");
+    if (e) { keymap_apply(e, "DM_KEYMAP"); return; }
+    NSString *s = saved && !strcmp(saved, "0") ? nil : [NSUserDefaults.standardUserDefaults stringForKey:@"controls.keymap"];
+    keymap_apply(s.UTF8String, "Controls");
+}
+static uint32_t g_cap_pad;   // the elements pressed at the last controller report while the Controls screen listens: a press is a new one
+static void pad_capture(GCExtendedGamepad *g) {
+    uint32_t e = dm_pad_elements(g), fresh = e & ~g_cap_pad; g_cap_pad = e;
+    if (fresh && g_capture) { const char *t = dm_km_pad(__builtin_ctz(fresh)); if (t) g_capture(t); }
+}
+static void pads_reread(void) {   // each controller as it is now (the Controls screen closed)
+    if (g_merge) { for (GCController *c in GCController.controllers) if (c.extendedGamepad) read_pad(c.extendedGamepad); }
+    else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p].extendedGamepad) read_pad(g_held[p].extendedGamepad);
+}
+const char *dm_keymap_game(void) {   // the game's bindings over the base map: the mouse's buttons and the profile's key_binds
+    static char out[2048]; km_map base, m; keymap_game(&m);
+    memset(&base, 0, sizeof base); km_parse(&base, KM_BASE, NULL, 0);
+    if (km_write(&m, &base, out, sizeof out) < 0) *out = 0;
+    return out;
+}
+const char *dm_keymap_player(void) {   // the player's bindings now: at the start, what the game will load
+    if (g_map_loaded) return g_player;
+    const char *e = getenv("DM_KEYMAP"), *saved = getenv("DM_SAVED_CHOICES");
+    if (e) return e;
+    NSString *s = saved && !strcmp(saved, "0") ? nil : [NSUserDefaults.standardUserDefaults stringForKey:@"controls.keymap"];
+    snprintf(g_player, sizeof g_player, "%s", s.UTF8String ?: "");
+    return g_player;
+}
+void dm_keymap_set(const char *player) { if (g_map_loaded) keymap_apply(player, "Controls"); else snprintf(g_player, sizeof g_player, "%s", player ? player : ""); }
+void dm_keymap_capture(void (*cb)(const char *token)) {
+    if (!!cb == !!g_capture) { g_capture = cb; return; }
+    g_capture = cb; g_cap_pad = 0;
+    for (GCController *c in GCController.controllers) if (c.extendedGamepad) g_cap_pad |= dm_pad_elements(c.extendedGamepad);   // what is held as it opens is not a press
+    kbm_devices();
+    if (cb) {   // everything the game holds lets go
+        if (g_view) { kbm_reset(); publish(); kbm_lock_update(); dm_gamepad_reset(); }
+        else for (GCController *c in GCController.controllers) if (c.extendedGamepad) c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; pad_capture(g); };
+        LOG("front end: the Controls screen is open, input goes to it");
+    } else {
+        if (g_view) { pads_reread(); kbm_lock_update(); }
+        else for (GCController *c in GCController.controllers) c.extendedGamepad.valueChangedHandler = nil;
+        LOG("front end: the Controls screen is closed");
+    }
 }

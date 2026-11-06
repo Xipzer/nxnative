@@ -152,6 +152,16 @@ def header_multi(progs):
     return '\n'.join(L + [''])
 
 
+KEY_BIND = re.compile(r'(?i)(kb:(\w+|0x[0-9a-f]{1,2})|mouse:(left|right|middle)|pad:\w+)=(\w+|\+|-)')   # one key_binds word; keymap.h reads the names
+
+
+def key_binds_text(g):
+    """The game's bindings over keymap.h's base map, as the Controls screens take them: the mouse's buttons (mouse_buttons) then key_binds"""
+    names = {'+': 'PLUS', '-': 'NONE'}
+    mouse = [f'mouse:{side}={names.get(b.upper(), b.upper())}' for side, b in zip(('left', 'right', 'middle'), g.words('mouse_buttons', 'Y ZL R3'))]
+    return ' '.join(mouse + g.words('key_binds', ''))
+
+
 def header_one(g):
     """the host's game_profile.h: the profile constants the host uses, as macros"""
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -195,6 +205,9 @@ def header_one(g):
     ms = g.get('mouse', 'camera' if pl == 'full' else 'touch')   # the mouse or trackpad: camera = the right stick while captured (mouse_look.h), touch = the touch screen
     if ms not in ('camera', 'touch'): sys.exit(f'{g.id}: mouse must be camera or touch: {ms}')
     mb = g.get('mouse_buttons', 'Y ZL R3')   # the mouse's left, right and middle buttons while it is the camera (mouse_look.h ml_buttons)
+    kbs = g.get('key_binds', '')   # bindings over the base map and mouse_buttons (dm/host/keymap.h's text form: kb:LeftShift=B mouse:right=ZL pad:FaceTop=X; the test compiles keymap.h to read every profile's)
+    bad = [w for w in kbs.split() if not KEY_BIND.fullmatch(w)]
+    if bad: sys.exit(f'{g.id}: key_binds takes <kb:key | mouse:left|right|middle | pad:element>=<output> words (dm/host/keymap.h): {" ".join(bad)}')
     sks = g.get('shader_key_skip', '')   # control-section bytes the shader keys hash as zeros, <offset>+<length> (hle_nvn.c keys_hash, shader_split.py key_ctl; Batman: Arkham Knight: GLSLC's compile information, 0x770+0x78)
     m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)\+(0x[0-9a-fA-F]+|\d+)', sks) if sks else None
     if sks and (not m or not 0x30 <= int(m[1], 0) or not 0 < int(m[2], 0) or int(m[1], 0) + int(m[2], 0) > 0x880 or (int(m[1], 0) < 0x760 and int(m[1], 0) + int(m[2], 0) > 0x700)):   # not over +0x700..+0x75f, the code area and compute fields the tools read
@@ -270,6 +283,7 @@ def header_one(g):
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
          f'#define DM_GAME_MOUSE {int(ms == "camera")}',
          f'#define DM_GAME_MOUSE_BUTTONS {q(mb)}',
+         f'#define DM_GAME_KEY_BINDS {q(" ".join(kbs.split()))}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
