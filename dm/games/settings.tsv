@@ -24,7 +24,7 @@ DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Picture	Display mode		
 DM_RENDER_SCALE	range	0.5:DM_GAME_RENDER_SCALE_MAX:0.05	1.0	fixups:RENDER_SCALE	Picture	Render scale	Above 100% only as far as the game's own render target pools reach.	level=basic
 DM_RESCALE	range	0.5:2.0:0.05	1.0	gfxapi:nvn+!fixups:RENDER_SCALE	Picture	Render scale	The game's screen-sized images are drawn this many times larger. Above 100% uses more GPU time and memory.	level=basic
 DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Picture	Dynamic resolution	Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.
-DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Picture	Upscaling	Uses more GPU time and can increase heat.
+DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX,fsr=FSR 1	off	always	Picture	Upscaling	Uses more GPU time and can increase heat.
 DM_PRESENT_UPSCALE_OUT	range	1.0:4.0:0.1	1.0	always	Picture	Upscaling detail	Only with MetalFX upscaling. Uses more GPU time and can increase heat.	needs=DM_PRESENT_UPSCALE=metalfx
 DM_SHARPEN	range	0:1:0.05	0	always	Picture	Sharpening
 DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Picture	Game's upscaler

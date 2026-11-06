@@ -64,7 +64,7 @@ The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed ther
 
 ### Upscaling
 
-A game that renders below the screen's resolution is scaled up to the screen. **Standard**, the default, scales smoothly; **MetalFX** uses Apple's MetalFX upscaler, which sharpens edges and text as it scales.
+A game that renders below the screen's resolution is scaled up to the screen. **Standard**, the default, scales smoothly; **MetalFX** uses Apple's MetalFX upscaler, which sharpens edges and text as it scales. **FSR 1** uses AMD's FSR 1 edge adaptive upsampling in the present pass: a similar look for less GPU time (iPad Pro 13" M4, 1920x1440 to 2752x2064: 1.6 ms a frame against MetalFX's 2.2 and Standard's 0.4).
 
 ```mermaid
 flowchart LR
@@ -344,7 +344,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Mouse and trackpad | `DM_MOUSE` | `1` camera, `0` touch screen |
 | Mouse sensitivity | `DM_MOUSE_SENS` | `0.25` to `4` |
-| Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
+| Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx`, `fsr` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
 
 | Anisotropic filtering | `DM_ANISO` | `0` off, `2` to `16` |
