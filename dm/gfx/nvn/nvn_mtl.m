@@ -9466,7 +9466,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     // uniform buffer slots are made again, as the full path below makes them. Not for a shader that reads handles or pointers out of a uniform buffer (their slots follow
     // its content), nor where the full reuse above is refused for other reasons. DM_NVN_CB_FAST=0 writes every table in full
     static int cbf = -1; if (cbf < 0) { const char *e = getenv("DM_NVN_CB_FAST"); cbf = !(e && !strcmp(e, "0")); }
-    if (!sh->cb_only) { int ok = 1; for (int i = 0; i < sh->rf.nb; i++) { int k = sh->rf.b[i].kind; if (k == NVN_RB_SAMPU || k == NVN_RB_TEXU || k == NVN_RB_SBUFU || k == NVN_RB_UBOP) { ok = 0; break; } } sh->cb_only = ok ? 1 : -1; }
+    if (!sh->cb_only) { int ok = 1; for (int i = 0; i < sh->rf.nb; i++) { int k = sh->rf.b[i].kind; if (k == NVN_RB_SAMPU || k == NVN_RB_TEXU || k == NVN_RB_SBUFU || k == NVN_RB_UBOP || k == NVN_RB_IMGU || k == NVN_RB_TBUFU) { ok = 0; break; } } sh->cb_only = ok ? 1 : -1; }
     if (cbf && sh->cb_only > 0 && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && sh->ab_ogen == g_args_ogen[nvn_stage] && nvn_stage != 5
         && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !(g_mv.draw && nvn_stage == 0) && !(sh->rf.pool && sh->ab_pgen != g_psnap_gen) && !g_res_check_on) {
         NSUInteger len = sh->arg_len ? sh->arg_len : sh->ae.encodedLength;
