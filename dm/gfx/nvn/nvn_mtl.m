@@ -911,6 +911,8 @@ void mtl_prepare(void) {
     if (!g_warm_started && prepare_on()) { mtl_init(); shmap_load(); }
 }
 static void sub_cut_begin(void);
+static void pass_split_try(void);
+static uint64_t g_setrt_n;   // render target changes so far (pass_split_try: splits per NVN pass)
 void mtl_sub_begin(void) {
     mtl_init(); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
     sub_cut_begin();
@@ -11824,6 +11826,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     }
     if (!g_geo_mesh.on) geo_mesh_flush_draw();   // another draw (a geometry draw decides in geo_mesh_draw): a waiting run of mesh draws goes first
     if (g_enc && g_enc_geo_nocolor != g_geo_omit_colors) rp_end();
+    if (g_enc && !g_geo_program && !g_geo_mesh.on) pass_split_try();
     int mdx_on = (dw && dw->mdi_cnt) || (di && di->mdi_cnt) ? mdx_wanted(dw, di) : 0;   // an indirect-count multi-draw's record masked on the GPU (mdx_run), else read after a wait
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
@@ -13026,6 +13029,7 @@ enum { CUT_DEFAULT = 64 };
 #endif
 static int cut_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_CUT"); v = e ? atoi(e) : CUT_DEFAULT; MLOG("segmented submission: a segment is submitted between passes every %d draws (DM_NVN_CUT, 0 = off)", v); } return v; }
 static uint64_t g_cut_draw0, g_cuts, g_copy_cuts;
+static _Atomic int g_seg_inflight;   // segments committed and not yet done on the GPU (pass_split_try)
 // The count starts with the submission (mtl_sub_begin). It used to start at the submission's first sub_cut, which only a render target change reaches (OP_SET_RT): the draws a
 // submission makes into the target it inherited, before its first target change, were never counted, and the first segment came that many draws late
 static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
@@ -13044,7 +13048,9 @@ static void sub_cut(void) {
     uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
     if (seg_ts()) { if (!g_sclk) { g_sclk = calloc(1, sizeof *g_sclk); atomic_store(&g_sclk->refs, 1); } sc = g_sclk; atomic_fetch_add(&sc->refs, 1); }
     MTL4CommitOptions *o = [MTL4CommitOptions new];
+    atomic_fetch_add_explicit(&g_seg_inflight, 1, memory_order_relaxed);
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
+        atomic_fetch_sub_explicit(&g_seg_inflight, 1, memory_order_relaxed);
         gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int k; if (k++ < 8) MLOG("[RED] segment command buffer execution error: %s", cb.error.description.UTF8String); res_top_once(cb.error); }
@@ -13058,6 +13064,24 @@ static void sub_cut(void) {
     g_cut_draw0 = g_stat_draw;
     if (!g_cuts++) MLOG("segmented submission: first segment submitted at frame %llu pass %llu", (unsigned long long)f, (unsigned long long)g_stat_pass);
 }
+// A long render pass is one segment: Breath of the Wild draws 2,700 of its 4,100 draws a frame into the G-buffer, and the GPU, done with the shadow passes before it,
+// waited for the whole pass to be translated (about 2.5 ms of the 9 ms frame at 120 fps on the Mac). With no segment left on the GPU and DM_NVN_PASS_SPLIT draws (default 256,
+// 0 = off) encoded since the last cut, the pass is ended (its attachments stored), the segment committed, and the next draw opens the pass again, loading them. Each split
+// costs a store and a load of the attachments, so it is taken only while the GPU would otherwise wait
+static uint64_t g_pass_splits, g_split_pass; static int g_split_n;   // g_split_n: splits of the pass g_split_pass so far
+static int pass_split_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_PASS_SPLIT"); v = e ? atoi(e) : 256; } return v; }
+static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_PASS_SPLIT_MAX"); v = e ? atoi(e) : 2; } return v; }   // per NVN pass: each split stores and loads its attachments
+static void pass_split_try(void) {
+    int n = pass_split_draws();
+    if (n <= 0 || !g_enc || !g_cb || g_stat_draw - g_cut_draw0 < (uint64_t)n || atomic_load_explicit(&g_seg_inflight, memory_order_relaxed)) return;
+    if (g_rt_merged || g_rt_range_active || g_rt_range_pending || g_sm_pass || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_defer_replaying || g_lp.count) return;
+    if (g_split_pass != g_setrt_n) { g_split_pass = g_setrt_n; g_split_n = 0; }
+    if (pass_split_max() > 0 && g_split_n >= pass_split_max()) return;
+    g_split_n++;
+    rp_end(); sub_cut();
+    if (!g_pass_splits++) MLOG("pass split: a long render pass was ended and its segment committed while the GPU had nothing to do (DM_NVN_PASS_SPLIT=%d, frame %llu pass %llu)", n, (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass);
+}
+uint64_t mtl_pass_splits(void) { return g_pass_splits; }
 uint64_t mtl_cut_count(void) { return g_cuts; }
 uint64_t mtl_copy_cut_count(void) { return g_copy_cuts; }
 
@@ -13273,7 +13297,7 @@ void mtl_exec(const uint8_t *p) {
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu f=%g,%g,%g,%g", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n,
                    n >= 4 ? ((const float *)((const uint8_t *)a + 16))[0] : 0.f, n >= 8 ? ((const float *)((const uint8_t *)a + 16))[1] : 0.f, n >= 12 ? ((const float *)((const uint8_t *)a + 16))[2] : 0.f, n >= 16 ? ((const float *)((const uint8_t *)a + 16))[3] : 0.f); mtl_sub_update((const uint8_t *)a + 16, d, n); break; }
             case OP_SET_RT: {
-                const p_set_rt *r = a;
+                const p_set_rt *r = a; g_setrt_n++;
                 if (defer_begin_q(p)) break;
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
                 if (g_enc && !pend && R.has_rt && tbdr_on() && rt_range_same(&R.rt,r)) {
@@ -14507,6 +14531,13 @@ static void *link_main(void *arg) {   // Display link thread: started when switc
 static void link_sync(void) {   // Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
     static int applied;
     pthread_mutex_lock(&g_pq_mu);
+    // A variable frame step: each frame is presented when it is ready (mode 0), its own step paces the game. On the display link (mode 4, at the cap) Breath of the Wild at
+    // 120 fps on a ProMotion MacBook ran at 120 for a minute or two, then settled at 83-87 fps with a quarter of its frames on screen for two refreshes, at the same CPU
+    // and GPU cost; presented directly it held 120 with 99.9% of frames on screen for one refresh, a frame sooner. DM_VSTEP_LINK=1: the link at the cap, as before
+    { static int vl = -1, forced, req; if (vl < 0) { const char *e = getenv("DM_VSTEP_LINK"); vl = e && atoi(e); }
+      int vs = !vl && nvn_var_fps();
+      if (vs && !forced && g_dm_present_link) { req = g_dm_present_link; g_dm_present_link = 0; forced = 1; MLOG("present pacing: each frame when it is ready (a variable frame step at its cap)"); }
+      else if (forced && !vs) { if (!g_dm_present_link) g_dm_present_link = req; forced = 0; MLOG("present pacing: the display link again (the variable frame step ended)"); } }
     int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; pthread_mutex_unlock(&g_pq_mu); return; }
     if (g_rescue_mode && (want != g_rescue_mode || now_ns() >= g_rescue_back_at)) {
@@ -14522,7 +14553,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
         static int said; if (!said++) MLOG("[mfx] display link at the screen's full rate (%d Hz) for interpolation at half of it", front_screen_max_fps());
         want = 2; }
     else if (want && mfx_on() && mfx_enabled() == MFX_HALF) { static int said; if (!said++) MLOG("[RED] [mfx] the screen reports %d Hz: interpolation at half the rate needs 100 Hz or more", front_screen_max_fps()); }
-    else if (want && nvn_var_fps()) want = 4;   // a variable frame step: the link at its cap
+    else if (want && nvn_var_fps()) want = 4;   // a variable frame step: the link at its cap (DM_VSTEP_LINK=1; see the top of link_sync)
     static int var_was; if (want == 4 && nvn_var_fps() != var_was) { var_was = nvn_var_fps(); applied = -1; }   // a new cap: the range again
     if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : want == 4 ? nvn_var_fps() : 60);
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
