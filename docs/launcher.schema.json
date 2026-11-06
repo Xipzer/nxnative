@@ -8,7 +8,8 @@
   "properties": {
     "schema": {"description": "The list's version; a list without it is schema 1 written before the field existed.", "type": "integer", "const": 1},
     "game": {"description": "The base game's title ID.", "type": "string", "pattern": "^[0-9A-F]{16}$"},
-    "settings": {"type": "array", "items": {"$ref": "#/$defs/setting"}}
+    "settings": {"type": "array", "items": {"$ref": "#/$defs/setting"}},
+    "key_binds": {"description": "The game's key, mouse and controller bindings over dm/host/keymap.h's base map (the profile's mouse_buttons and key_binds), in keymap.h's text form: the Controls screen's defaults. Absent in lists written before it.", "type": "string"}
   },
   "$defs": {
     "size": {"description": "[width, height] in pixels.", "type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},

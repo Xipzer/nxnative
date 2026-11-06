@@ -134,6 +134,18 @@ static void saved_choices(void) {   // after the env files, before the bundle's 
     }
 }
 
+// Controls: the player's key, mouse and controller bindings from the settings window (ControlsView.swift; controls.keymap in the app's preferences, dm/host/keymap.h's text) become
+// DM_KEYMAP, with or without the window; a DM_KEYMAP the launch environment or an env file set wins, and DM_SAVED_CHOICES=0 ignores them (docs/frontends.md, Controls)
+static void controls_keymap(void) {
+    CFStringRef domain = CFBundleGetIdentifier(CFBundleGetMainBundle()); const char *off = getenv("DM_SAVED_CHOICES");
+    if (getenv("DM_KEYMAP") || !domain || (off && !strcmp(off, "0"))) return;
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("controls.keymap"), domain); char s[4096];
+    if (v && CFGetTypeID(v) == CFStringGetTypeID() && CFStringGetCString(v, s, sizeof s, kCFStringEncodingUTF8) && *s) {
+        setenv("DM_KEYMAP", s, 1); fprintf(stderr, "launcher: env DM_KEYMAP=%s (Controls)\n", s);
+    }
+    if (v) CFRelease(v);
+}
+
 // Cloud saves: the folder chosen in the settings window (Launcher.swift CloudSavesSection, cloudSaves.folder in the app's preferences) becomes DM_SAVE_SYNC
 // (dm/host/save_sync.h), with or without the window; a DM_SAVE_SYNC the launch environment or an env file set wins. A front end may write the key too (docs/frontends.md, The cloud saves folder)
 static void cloud_saves_folder(void) {
@@ -205,6 +217,7 @@ int main(int argc, char **argv) {
     if (!shown) return 0;   // Quit: no game
     if (shown == 2) saved_choices();
     cloud_saves_folder();
+    controls_keymap();
     setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
     snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);

@@ -45,6 +45,7 @@ A built app carries the settings its game supports, as the iPhone app's settings
 - `base` (optional, render scale only): `{"docked": [w, h], "handheld": [w, h]}`, the 3D views' size that the scale multiplies, so a front end can show 0.75 as 1200×675 docked. It comes from the game's profile (`render_base`), and only some games have it.
 - `level` (optional): `basic` marks a setting to show first, for a front end that shows a short list and puts the rest behind a second step. Without it, the front end decides.
 - `needs` (optional): `<VAR>=<value>` makes the row a sub-setting of the row that sets `<VAR>`, drawn only while that row has that value (Rumble strength only while rumble is on). A row naming a variable the list does not have stays drawn.
+- `key_binds` (optional, beside `settings`): the game's key, mouse and controller bindings over the base map, in `dm/host/keymap.h`'s text form (`mouse:left=Y mouse:right=ZL mouse:middle=R3 kb:LeftShift=B …`): the defaults of a Controls screen ([Controls](#controls)).
 - An app without the file has no settings to offer: start it as it is.
 
 **Compatibility.** [launcher.schema.json](launcher.schema.json) describes the file as a JSON Schema, so a front end can check it and generate its types from it. `schema` is 1, and schema 1 grows only by optional fields: a reader ignores fields it does not know, draws sections it does not know, and a field never changes its meaning. A new `kind` would be schema 2, since a reader cannot draw a kind it does not know. A list written before the field existed has no `schema` and is 1. In `settings.tsv`, the optional fields come from the last column, `meta` (`key=value` pairs separated by `;`); a new key is added in `settings.py`'s `META`, here and in the schema together, and `test_launcher_settings.py` fails when the three disagree.
@@ -85,6 +86,14 @@ The folder a Mac app's save is synced through ([Cloud saves](settings.md#cloud-s
 - **The order** is that of the saved choices: `DM_SAVE_SYNC` in the launch environment wins (a folder for this start only, or `0` to start without cloud saves), then an `env.txt`, then this key. `DM_SAVE_SYNC=icloud` is iCloud Drive › nxnative Saves.
 - **One folder serves every game.** Each game keeps its own `<title ID>/save.dmsync` in it, so a front end can write the same path into each app's domain to give its whole library one cloud folder. A path that already ends in the game's title ID is taken as that game's own folder.
 - **The iPhone app** keeps its folder as a security-scoped bookmark that only its own folder picker can make, so it is chosen there.
+
+### Controls
+
+The player's key, mouse and controller bindings ([Keyboard, mouse and controller](settings.md#keyboard-mouse-and-controller)) are not a row of the settings list either. They have a key of their own in the same store: `controls.keymap`, a string in `dm/host/keymap.h`'s text form that lists only what differs from the game's bindings (`launcher.json`'s `key_binds` over keymap.h's `KM_BASE`): `<input>=<output>` words such as `kb:LeftShift=B kb:Space=X mouse:right=ZL pad:FaceTop=RS_UP kb:Q=NONE`. Remove the key, or write an empty string, for the game's bindings.
+
+- **Read at every start** by `dm/mac/launcher.c`, with or without the window, and passed on to the host as `DM_KEYMAP`. The iPhone app reads it itself, and its in-game menu changes it while the game runs.
+- **The order** is that of the saved choices: `DM_KEYMAP` in the launch environment wins, then an `env.txt`, then this key; `DM_SAVED_CHOICES=0` ignores the key.
+- **Names** are keymap.h's: keys by their HID usage names (`kb:W`, `kb:Return`, `kb:LeftShift`, `kb:0x2c`), `mouse:left` / `right` / `middle` (with Mouse: Camera), `pad:FaceRight` … `pad:DpadDown` (face buttons by position: FaceRight is the Switch's A). The host logs a binding it does not understand and uses the rest.
 
 ## Cheats
 

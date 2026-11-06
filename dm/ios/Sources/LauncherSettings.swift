@@ -32,7 +32,11 @@ struct Setting: Decodable, Identifiable {
     }
     enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
 }
-struct SettingsFile: Decodable { let settings: [Setting] }
+struct SettingsFile: Decodable {
+    let settings: [Setting]
+    let keyBinds: String?   // the game's bindings over keymap.h's base map, for the Mac window's Controls (the iPhone app has them compiled in); absent in older lists
+    enum CodingKeys: String, CodingKey { case settings, keyBinds = "key_binds" }
+}
 
 final class LauncherModel: ObservableObject {
     let settings: [Setting]

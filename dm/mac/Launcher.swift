@@ -3,7 +3,8 @@
 // and so is the store: launcher.<VAR> in the app's preferences, which launcher.c reads when the window is not shown (docs/frontends.md, Saved choices). Basic settings (level basic) come
 // first, the others under Advanced settings, each in the list's sections. Play puts the settings into this process's environment, which the host inherits; Quit and closing the window end the
 // app without the game. "Show this window at launch" off: no window unless Option is held at launch, and launcher.c applies the saved choices. The window never takes focus by itself: an app
-// opened in the background (open -g) keeps its window behind until the player switches to it
+// opened in the background (open -g) keeps its window behind until the player switches to it. Controls (ControlsView.swift) edits the key, mouse and controller bindings, kept as
+// controls.keymap in the same preferences, which launcher.c passes on as DM_KEYMAP
 import AppKit
 import QuartzCore
 import SwiftUI
@@ -12,6 +13,7 @@ private func info(_ key: String) -> String? { Bundle.main.object(forInfoDictiona
 
 struct LauncherView: View {
     @ObservedObject var m: LauncherModel
+    var keyBinds = ""   // the game's bindings (launcher.json key_binds), the Controls screen's defaults
     let done: (Bool) -> Void
     let fit: (CGFloat) -> Void
     @AppStorage("window.show") private var show = true
@@ -30,6 +32,11 @@ struct LauncherView: View {
             .padding([.horizontal, .top], 20)
             Form {
                 settingSections(basic: true)
+                Section {
+                    ControlsEntry { .mac(gameBinds: keyBinds) }   // ControlsView.swift
+                } footer: {
+                    Text("Your bindings take effect when the game starts.")
+                }
                 CloudSavesSection()
                 Section {
                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
@@ -120,10 +127,11 @@ struct CloudSavesSection: View {
 
 private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model: LauncherModel
+    let keyBinds: String
     var window: NSWindow?
     var play = false
 
-    init(_ model: LauncherModel) { self.model = model }
+    init(_ model: LauncherModel, keyBinds: String) { self.model = model; self.keyBinds = keyBinds }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let name = info("CFBundleName") ?? "Game"
@@ -138,7 +146,7 @@ private final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate 
         if let screen = w.screen ?? NSScreen.main {
             w.setFrameTopLeftPoint(NSPoint(x: screen.visibleFrame.midX - w.frame.width / 2, y: screen.visibleFrame.maxY))
         }
-        let host = NSHostingView(rootView: LauncherView(m: model, done: { [weak self] in self?.finish($0) }, fit: { [weak self] in self?.fit($0) }))
+        let host = NSHostingView(rootView: LauncherView(m: model, keyBinds: keyBinds, done: { [weak self] in self?.finish($0) }, fit: { [weak self] in self?.fit($0) }))
         host.sizingOptions = []   // the Form's measured scroll content owns the height, including after collapse
         w.contentView = host
         host.layoutSubtreeIfNeeded()
@@ -188,7 +196,7 @@ public func dmMacLauncher() -> Int32 {
         return 2
     }
     let model = LauncherModel(file.settings)
-    let app = NSApplication.shared, launcher = Launcher(model)
+    let app = NSApplication.shared, launcher = Launcher(model, keyBinds: file.keyBinds ?? "")
     app.setActivationPolicy(.regular)
     app.delegate = launcher
     fputs("launcher: \(file.settings.count) settings shown\n", stderr)

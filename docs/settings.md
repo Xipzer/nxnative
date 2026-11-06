@@ -4,7 +4,7 @@ The screen before the game starts shows the settings the game supports. A settin
 
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
-- [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Mouse and trackpad](#mouse-and-trackpad), [Mouse sensitivity](#mouse-sensitivity)
+- [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Mouse and trackpad](#mouse-and-trackpad), [Mouse sensitivity](#mouse-sensitivity), [Keyboard, mouse and controller](#keyboard-mouse-and-controller)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
 - [In-game menu](#in-game-menu)
@@ -172,11 +172,23 @@ A controller's vibration weaker than this stays off, and the rest is spread over
 
 **Camera** (the default in 3D games): click the picture and the pointer is captured; moving the mouse or the trackpad turns the camera, and the buttons press game buttons (Breath of the Wild and Tears of the Kingdom: left Y, right ZL, middle R3). Esc frees the pointer, and so does opening the in-game menu. On the iPad the pointer is captured only while the app fills the screen. **Touch screen**: the mouse is a finger on the touch screen.
 
-A hardware keyboard plays on the iPad as on the Mac: WASD the left stick, the arrow keys the D-pad (with Shift: the right stick), J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller. The touch controls hide while the keyboard or the mouse is in use and come back at the next touch.
+A hardware keyboard plays on the iPad as on the Mac: WASD the left stick, the arrow keys the D-pad (with Shift: the right stick), J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller; [Keyboard, mouse and controller](#keyboard-mouse-and-controller) changes them. The touch controls hide while the keyboard or the mouse is in use and come back at the next touch.
 
 ### Mouse sensitivity
 
 How fast the camera turns for a given mouse speed, from 25 to 400 %.
+
+### Keyboard, mouse and controller
+
+The **Controls** screen sets which key, mouse button or controller button presses each Switch control. Open it from **Keyboard, mouse and controller** in the Controls section, on the iPhone and iPad also from **Controls…** in the [in-game menu](#in-game-menu), where a change takes effect at once. In the [Mac settings window](#the-mac-settings-window) it is under the basic settings and takes effect when the game starts.
+
+- **Keyboard & Mouse** and **Controller** at the top switch between the two sets of bindings.
+- The Switch controls are listed in groups: **Face buttons** (A B X Y), **Shoulders** (L R ZL ZR), **Sticks** (each stick's four directions and its press), **D-pad** and **System** (+, − and **Shake**, which shakes the controller for motion controls). Each row shows what presses it now as small key caps, or **Not bound**.
+- Tap a row (click on the Mac), then press a key or a controller button. For a mouse button, click in the box that says **Click here with a mouse button**. The new key replaces the row's keys; a mouse button replaces its mouse buttons and a controller button its controller buttons. A key you bind leaves the control it pressed before. Esc or **Cancel** stops without a change. ⌘ and Esc cannot be bound.
+- The arrow at the end of a changed row puts that row back to the game's default. Touch and hold a row (right-click on the Mac) to **Clear** it. **Reset to game defaults** at the bottom puts every binding back.
+- While the screen is open, nothing you press reaches the game.
+
+Every game starts from the same keyboard map: WASD the left stick, the arrow keys the D-pad (with Shift: the right stick, while no Shift key is bound), J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller. A controller's buttons are a Switch controller's, the face buttons by position. Some games change a few: Breath of the Wild and Tears of the Kingdom sprint with Shift (B), jump with Space (X) and shake with H; the mouse attacks with the left button (Y) and locks on with the right one (ZL). A controller's sticks always stay its sticks. The bindings are kept for each game. In a file: `DM_KEYMAP` ([Settings in a file](#settings-in-a-file)), for instance `DM_KEYMAP=kb:LeftShift=B kb:Space=X mouse:right=ZL pad:FaceTop=Y`; the screen then shows them without changing them.
 
 ## Performance
 
@@ -314,7 +326,7 @@ iCloud Drive takes a moment to carry a file from one device to the other. Quit t
 
 ## In-game menu
 
-On the iPhone and iPad the gear at the top centre of the touch controls opens a menu while the game runs; it stays when a controller hides the other controls. It holds **Console mode**, **Picture** and the **Frame-rate counter**, then **Controller layout** (**2D**, **3D**, and **Tap**, no controls and every touch to the game, in handheld mode), **Touch feedback** and **Game rumble**: the settings that take effect at once. A choice opens to show its options, the current one ticked. The menu's text keeps one size whatever the system text size, so it stays short over the game. A change is remembered as on the settings screen, which shows it at the next start; a setting `Documents/env.txt` fixes is shown, not changed. The other settings need the game to start again, so they are only on the settings screen: close the app fully and open it again.
+On the iPhone and iPad the gear at the top centre of the touch controls opens a menu while the game runs; it stays when a controller hides the other controls. It holds **Console mode**, **Picture** and the **Frame-rate counter**, then **Controller layout** (**2D**, **3D**, and **Tap**, no controls and every touch to the game, in handheld mode), **Controls…** (the [bindings](#keyboard-mouse-and-controller), which change at once), **Touch feedback** and **Game rumble**: the settings that take effect at once. A choice opens to show its options, the current one ticked. The menu's text keeps one size whatever the system text size, so it stays short over the game. A change is remembered as on the settings screen, which shows it at the next start; a setting `Documents/env.txt` fixes is shown, not changed. The other settings need the game to start again, so they are only on the settings screen: close the app fully and open it again.
 
 Console mode changes as on a Switch put in or taken out of its dock. While a TV shows the game it stays **Docked**, and the mode you pick applies when the TV is disconnected. **Docked** removes the Tap layout, as a docked Switch reads no touch screen.
 
@@ -343,6 +355,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble strength | `DM_RUMBLE_GAIN` | `0` to `3` |
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Mouse and trackpad | `DM_MOUSE` | `1` camera, `0` touch screen |
+| Keyboard, mouse and controller | `DM_KEYMAP` | bindings over the game's, such as `kb:LeftShift=B mouse:right=ZL pad:FaceTop=Y` ([dm/host/keymap.h](../dm/host/keymap.h)) |
 | Mouse sensitivity | `DM_MOUSE_SENS` | `0.25` to `4` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx`, `fsr` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
