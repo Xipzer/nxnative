@@ -283,6 +283,7 @@ static void launcher_done(void) { [g_root startGame]; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 - (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersPointerLocked { bool dm_kbm_pointer_lock(void); return dm_kbm_pointer_lock(); }   // DmGamepad.m: Mouse: Camera with a mouse or trackpad connected
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskAll; }
 @end
 UIViewController *front_ios_root(void) { return [DmRootVC new]; }
@@ -355,12 +356,13 @@ bool dm_setting_live(const char *env, const char *value) {
         dm_set_opmode(m); dm_gamepad_opmode_changed(); LOG("front end: console mode %s (in-game menu)", m ? "docked" : "handheld");
         return true;
     }
+    if (!strcmp(env, "DM_MOUSE")) { if (value) { void dm_kbm_set_mouse(int); dm_kbm_set_mouse(atoi(value) != 0); LOG("front end: mouse %s (in-game menu)", atoi(value) ? "camera" : "touch screen"); } return true; }
     if (!strcmp(env, "DM_SHOW_FPS")) { if (value) [g_root showFPS:atoi(value) != 0]; return true; }
     if (!strcmp(env, "DM_TOUCH_HAPTICS")) { if (value) dm_gamepad_touch_feedback(atoi(value) != 0); return true; }
     if (!strcmp(env, "DM_RUMBLE")) { if (value) { dm_haptics_set_enabled(atoi(value) != 0); LOG("front end: game rumble %s (in-game menu)", atoi(value) ? "on" : "off"); } return true; }
     // The graphics settings the host reads again while the game runs (dm/host/dm_live.h, applied at the next submission): filtering, the present's upscaler, detail and
     // sharpening, adaptive quality, the thermal cap, Deadline boost, the frame rate and the render scale (down to 50% and up to the scale the game started with)
-    static const char *const live[] = {"DM_ANISO", "DM_TRILINEAR", "DM_SHARPEN", "DM_PRESENT_UPSCALE", "DM_PRESENT_UPSCALE_OUT", "DM_QUALITY_AUTO", "DM_THERMAL_CAP", "DM_FRAME_WG", "DM_FPS_TARGET", "DM_RENDER_SCALE"};
+    static const char *const live[] = {"DM_ANISO", "DM_TRILINEAR", "DM_SHARPEN", "DM_PRESENT_UPSCALE", "DM_PRESENT_UPSCALE_OUT", "DM_QUALITY_AUTO", "DM_THERMAL_CAP", "DM_FRAME_WG", "DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_MOUSE_SENS"};
     for (size_t i = 0; i < sizeof live / sizeof *live; i++) if (!strcmp(env, live[i])) { if (value) dm_live_set(env, value); return true; }
     return false;
 }
