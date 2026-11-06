@@ -25,7 +25,7 @@ A Mac app carries the same list (`Contents/Resources/dm/launcher.json`), without
 
 Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way.
 
-On a Mac, a game checked at that speed (Fire Emblem Fortune's Weave, Mario & Luigi: Brothership) also offers **120 fps**. So does a build with a variable frame step (Breath of the Wild): each frame steps the game by the time it took, up to 120 a second. It needs a screen that shows 120 Hz, and uses more GPU and power. When frames do not fit, during movies, or on a slower screen, the game drops to 60 for a while, so it keeps its real speed. If you see the frame rate move between 60 and 120 and would rather it stayed still, choose 60.
+A game checked at that speed (Fire Emblem Fortune's Weave, Mario & Luigi: Brothership) also offers **120 fps**, on the Mac and on a 120 Hz iPhone or iPad. So does a build with a variable frame step (Breath of the Wild): each frame steps the game by the time it took, up to 120 a second. It needs a screen that shows 120 Hz, and uses more GPU and power. On an iPad Pro 13" M4, Breath of the Wild at 120% with MetalFX runs at about 75-90 fps there. When frames do not fit, during movies, or on a slower screen, the game drops to 60 for a while, so it keeps its real speed. If you see the frame rate move between 60 and 120 and would rather it stayed still, choose 60.
 
 ### Render scale
 
@@ -328,7 +328,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 
 | Setting | Variable | Values |
 |---|---|---|
-| Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (Mac, games with `fps_max 120`) |
+| Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (games with `fps_max 120` or a variable frame step) |
 | Render scale | `DM_RENDER_SCALE` | `0.5` to the profile's `render_scale_max` |
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
 | Game language | `DM_LANG` | a language code, such as `ja` |

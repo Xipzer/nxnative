@@ -1494,7 +1494,7 @@ static uint64_t g_fwg_joins, g_fwg_fail;
 static int g_fwg_on = -1; static unsigned g_fwg_seen = ~0u;   // DM_FRAME_WG as last read (the in-game settings may turn it on or off, dm_live.h)
 static int fwg_get(void) {
     unsigned lg = atomic_load(&dm_live_gen);
-    if (lg != g_fwg_seen) { g_fwg_seen = lg; const char *e = dm_live_getenv("DM_FRAME_WG"); g_fwg_on = e && atoi(e); }
+    if (lg != g_fwg_seen) { g_fwg_seen = lg; const char *e = dm_live_getenv("DM_FRAME_WG"); g_fwg_on = e ? atoi(e) : 0; }
     if (!g_fwg_on) return 0;   // off unless asked for (launcher: Deadline boost); a workgroup already made stays, unused
     if (g_fwg_state) return g_fwg_state > 0;
     void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
@@ -1512,9 +1512,38 @@ void dm_frame_wg_join(void) {   // the calling thread works to the frame's deadl
     else { char nm[64] = ""; pthread_getname_np(pthread_self(), nm, sizeof nm); if (g_fwg_joins++ < 12) LOG("[nvn] frame workgroup: thread '%s' joined", nm); }
 }
 void dm_frame_wg_leave(void) { if (t_fwg_joined == 1) { os_workgroup_leave(g_fwg, &t_fwg_tok); t_fwg_joined = 0; } }   // hle_thread.c thread_exit (no logging: a guest stack may be small)
+// DM_FRAME_WG=2 (Auto): the threads join as with 1, but frames are marked as intervals only while the CPU side is slow: the acquiring thread's own CPU time per frame (the
+// translation runs on it) averages over 42% of the period (normal play on the iPad Pro M4: 4.5-5 ms a frame at 60 fps; on the efficiency cores 8-10 ms) and at least 2 of the
+// last 120 frames came more than an eighth of a period late, while the scene GPU time (the last 60 frames, without the present) stays under 90% of the period: a boost cannot
+// help a GPU-bound frame, and its CPU power heats the GPU's package too. Once on it holds 60 s, then stops to see whether it is still needed; turned on again within 10 s of
+// stopping, the next hold doubles (up to 8 minutes). Cool and on time the CPU runs as without the boost, which cost 27% more CPU power there
+static double g_hr[1024]; static uint64_t g_hn;   // per-frame GPU time ring (thermal attribution, below)
+static int fwg_mode(void) { (void)fwg_get(); return g_fwg_on; }
+static int fwg_auto(uint64_t period_ns) {
+    static uint64_t last, last_cpu, until, off_at; static uint8_t ring[120]; static int ri, nlate, on, ons; static double ema; static uint64_t hold = 60000000000ull;
+    struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts); uint64_t cpu = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    uint64_t t = now_ns(), dt = last ? t - last : 0, dc = last_cpu ? cpu - last_cpu : 0; last = t; last_cpu = cpu;
+    int late = dt > period_ns + period_ns / 8 && dt < 500000000ull;   // not a load screen's pause
+    nlate += late - ring[ri]; ring[ri] = (uint8_t)late; ri = (ri + 1) % 120;
+    if (dt && dt < 500000000ull) ema += ((double)dc - ema) / 60;
+    if (on) {
+        if (t < until) return 1;
+        on = 0; off_at = t; if (ons < 40) LOG("[nvn] frame workgroup (auto): off at frame %llu after %.0f s; on again if frames come late", (unsigned long long)g_frame, hold / 1e9);
+        return 0;
+    }
+    double gs = 0; int gn = 0; for (uint64_t i = 1; i <= 60 && i <= g_hn; i++, gn++) gs += g_hr[(g_hn - i) % 1024];
+    int gpu_bound = gn && gs / gn > 0.9 * period_ns / 1e6;
+    if (nlate >= 2 && ema > 0.42 * period_ns && !gpu_bound) {
+        hold = off_at && t - off_at < 10000000000ull ? (hold * 2 > 480000000000ull ? 480000000000ull : hold * 2) : 60000000000ull;
+        on = 1; until = t + hold;
+        if (ons++ < 40) LOG("[nvn] frame workgroup (auto): on at frame %llu for %.0f s: %d of the last 120 frames late, %.1f ms CPU a frame on the acquiring thread, GPU %.1f ms",
+                            (unsigned long long)g_frame, hold / 1e9, nlate, ema / 1e6, gn ? gs / gn : 0);
+    }
+    return on;
+}
 static void fwg_frame(uint64_t period_ns) {   // on the acquiring thread, once per frame: the previous interval ends, the next one starts now with its deadline one period away
     static int started;
-    if (!period_ns || !fwg_get()) { if (started && g_fwg) { (void)os_workgroup_interval_finish(g_fwg, NULL); started = 0; } return; }   // turned off: the last interval ends
+    if (!period_ns || !fwg_get() || (fwg_mode() == 2 && !fwg_auto(period_ns))) { if (started && g_fwg) { (void)os_workgroup_interval_finish(g_fwg, NULL); started = 0; } return; }   // turned off: the last interval ends
     dm_frame_wg_join(); if (t_fwg_joined < 0) return;
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     if (started) (void)os_workgroup_interval_finish(g_fwg, NULL);
