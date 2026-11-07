@@ -42,6 +42,7 @@ DM_THERMAL_CAP	toggle	-	1	DM_GAME_FPS_TARGET!=0	Performance	Halve when hot	Holds
 DM_QUALITY_AUTO	toggle	-	0	gfxapi:nvn	Performance	Adaptive quality	Lowers upscaling detail, then render scale, while frames come late; raises them again when they fit.
 DM_FRAME_WG	choice	0=Off,2=Auto,1=Always	2	gfxapi:nvn	Performance	Deadline boost	Tells iOS each frame's deadline, so it keeps the game on the fast cores at a higher clock. Auto does it only while frames come late. Uses more power and heat.
 DM_NVN_ENC_THREAD	toggle	-	1|DM_GAME_ENC_THREAD	gfxapi:nvn	Performance	Encode thread
+DM_PAD_PRESS_TO_JOIN	toggle	-	0	always	Controls	Press a button to join
 DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.
 DM_PSO_MTL4	toggle	-	DM_GAME_PSO_MTL4|1	gfxapi:nvn	Performance	Metal 4 pipelines	Keeps a pipeline archive; uses more memory.
 DM_PSO_PREBUILD	toggle	-	1	gfxapi:nvn	Performance	Pipeline prebuild	The first start waits a few minutes for it, once.	needs=DM_PSO_MTL4=1

@@ -53,7 +53,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step (112 sites) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [ASTRAL CHAIN](../../dm/games/01007300020FA000/README.md) | the game's own clock and timers (a community 60 fps mod on the host's frame step) |
 | `build` → `game` | 60 fps frame step and render scale | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) | the game's own timing object |
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
-| `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
+| `build` → `game` | 60 fps frame step: the KIDS frame task, frame-rate block and event cutscene counters | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
 | `build` → `game` | BOTW perspective camera aspect and projection acknowledgement | rendering | blocked: camera update has no reviewed function fingerprint yet | checked: all 13 original words checked in main cd57b23fa4bbad65803d9788c01821ee; native/wide outdoor Mac gameplay and camera acknowledgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's camera update and projection-object layout; drawable publication and presentation are general host behavior |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
 | `build` → `game` | screen shape: the sizes, the view, the layouts' projection and their edge widgets (DM_SCREEN_ASPECT) | rendering | blocked: the stubs have no function-matched form yet | judgement | 1 | [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) | the output size is the host's, but where the game takes its sizes, its cameras and its layouts are this build's code |
@@ -75,7 +75,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Fire Emblem Engage](#fire-emblem-engage) | 1 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [Fire Emblem: Three Houses](#fire-emblem-three-houses) | 12 | 0 | 0 | 0 | 0 | `build` → `game`, `build` → `host` |
-| [Hyrule Warriors: Age of Calamity](#hyrule-warriors-age-of-calamity) | 0 | 0 | 3 | 0 | 0 | `build` → `game` |
+| [Hyrule Warriors: Age of Calamity](#hyrule-warriors-age-of-calamity) | 0 | 0 | 5 | 0 | 0 | `build` → `game` |
 | [Luigi's Mansion 3](#luigis-mansion-3) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
 | [Mario + Rabbids® Sparks of Hope](#mario--rabbids-sparks-of-hope) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Monster Hunter Rise](#monster-hunter-rise) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
@@ -346,9 +346,11 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md), `01002B00111A2000`, [patches.py](../../dm/games/01002B00111A2000/patches.py).
 
-- **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: 60 fps frame step: the KIDS frame task and frame-rate block. The game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code
+- **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: 60 fps frame step: the KIDS frame task, frame-rate block and event cutscene counters. The game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code
 
-- **1.3.0 `main`** `c3cf52bf…` ([patches.py:94](../../dm/games/01002B00111A2000/patches.py#L94))
+- **1.3.0 `main`** `c3cf52bf…` ([patches.py:113](../../dm/games/01002B00111A2000/patches.py#L113))
+  - frame step `+0x857d7c`: event cutscene's frame: stepped on every other update at a 60 fps cap (state page vsyncs per update; 30 fps frames, as on the Switch)
+  - frame step `+0x857da0`: event cutscene's frames left: stepped on every other update at a 60 fps cap (state page vsyncs per update; 30 fps frames, as on the Switch)
   - frame step `+0x8d94b0`: KTGL device config present interval: 1 above a 30 fps cap, else the game's 2 (state page target fps)
   - frame step `+0x166dab4`: KIDS frame task: fps and the frame-rate block = the cap, vsyncs per update marked; device frame rate 59.94 / vsyncs (state page target fps; 0 = the game's 30)
   - frame step `+0x166dc60`: KIDS frame task: the frame-rate object's steps × its fps × vsyncs per update / 60 (state page target fps; 0 = as the game sets them)

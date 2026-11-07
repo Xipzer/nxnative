@@ -4,7 +4,7 @@ The screen before the game starts shows the settings the game supports. A settin
 
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
-- [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Mouse and trackpad](#mouse-and-trackpad), [Mouse sensitivity](#mouse-sensitivity), [Keyboard, mouse and controller](#keyboard-mouse-and-controller)
+- [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Mouse and trackpad](#mouse-and-trackpad), [Mouse sensitivity](#mouse-sensitivity), [Keyboard, mouse and controller](#keyboard-mouse-and-controller), [Press a button to join](#press-a-button-to-join)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
 - [In-game menu](#in-game-menu)
@@ -190,6 +190,10 @@ The **Controls** screen sets which key, mouse button or controller button presse
 
 Every game starts from the same keyboard map: WASD the left stick, the arrow keys the D-pad (with Shift: the right stick, while no Shift key is bound), J K U I = A B X Y, Q E = L R, Z C = ZL ZR, F G = L3 R3, Return = +, Tab = −, Space shakes the controller. A controller's buttons are a Switch controller's, the face buttons by position. Some games change a few: Breath of the Wild and Tears of the Kingdom sprint with Shift (B), jump with Space (X) and shake with H; the mouse attacks with the left button (Y) and locks on with the right one (ZL). A controller's sticks always stay its sticks. The bindings are kept for each game. In a file: `DM_KEYMAP` ([Settings in a file](#settings-in-a-file)), for instance `DM_KEYMAP=kb:LeftShift=B kb:Space=X mouse:right=ZL pad:FaceTop=Y`; the screen then shows them without changing them.
 
+### Press a button to join
+
+Off by default: each controller is a player as soon as it connects, in the order the system lists them. On: a controller becomes a player only when you press one of its buttons, as the lowest player free, so the players choose their order and how many play. That press also reaches the game. When a game asks for more players than have joined, a prompt over the game waits for the others to press a button; B closes it.
+
 ## Performance
 
 These settings change how the app hands frames to the screen and how it prepares the GPU's work. The game's tested defaults are a good start; change them when a game stutters, runs hot, or you want less latency.
@@ -347,7 +351,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Display mode (Mac) | `DM_FULLSCREEN` | `1` fullscreen, `0` a window |
 | Cloud saves folder (Mac) | `DM_SAVE_SYNC` | a folder; `icloud`: iCloud Drive › nxnative Saves; `0`: off |
 | Picture (iPhone and iPad) | `DM_PICTURE_FIT` | `fit` 16:9 with black bars, `fill` covers the screen, cropped |
-| Picture shape | `DM_SCREEN_ASPECT` | `1.43` the iPhone Duo's shape, `0` 16:9 |
+| Picture shape | `DM_SCREEN_ASPECT` | `auto` the app window's own shape where it is taller than 16:9 (iPad 4:3, iPhone Duo 1.43:1), else 16:9 (iOS only); `1.43` the iPhone Duo's shape, `0` 16:9 |
 | Widescreen (BOTW 1.9.0, TOTK 1.4.3) | `DM_WIDESCREEN` | `0` original framing; unset enables wider screens |
 | Frame-rate counter | `DM_SHOW_FPS` | `1`, `0` |
 | Touch feedback | `DM_TOUCH_HAPTICS` | `1`, `0` |
@@ -357,6 +361,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Mouse and trackpad | `DM_MOUSE` | `1` camera, `0` touch screen |
 | Keyboard, mouse and controller | `DM_KEYMAP` | bindings over the game's, such as `kb:LeftShift=B mouse:right=ZL pad:FaceTop=Y` ([dm/host/keymap.h](../dm/host/keymap.h)) |
 | Mouse sensitivity | `DM_MOUSE_SENS` | `0.25` to `4` |
+| Press a button to join | `DM_PAD_PRESS_TO_JOIN` | `1`, `0` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx`, `fsr` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
 

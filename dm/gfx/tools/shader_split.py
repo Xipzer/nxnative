@@ -183,7 +183,7 @@ def nvn2_stage(ctl, code):   # an NVN2 shader's stage: compute, task and mesh by
 def bahs_shaders(d, label):
     rsz, region = field(d, '<II', 0x18, f'{label} BAHS header')
     if region + rsz > len(d): red(f'{label} BAHS code region out of bounds')
-    out = []
+    found = []
     for a in range(0, region - 16, 4):
         off, z, csz, rel = struct.unpack_from('<IIIi', d, a)
         nvn2 = 0x48 <= csz < 0x10000 and 0 <= a + rel and a + rel + csz <= region and nvn2_ctl(d[a + rel:a + rel + csz])
@@ -196,7 +196,13 @@ def bahs_shaders(d, label):
         code, ctl = d[region + off:region + off + n], d[c:c + csz]
         st = nvn2_stage(ctl, code) if nvn2 else 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
         if not st or check(label, st, ctl, code): continue
-        out.append((f'{label}#BAHS@{a:#x}', st, ctl, code))
+        found.append((a, c, (f'{label}#BAHS@{a:#x}', st, ctl, code)))
+    # A program entry never lies inside a control section. An NVN2 section's +0x38..+0x47 (instruction length, c1 start and end, code length: 0x1100, 0, 0x1100, 0x1100) reads as
+    # an entry whose offset, control length and control distance are all that length: Ocarina of Time's agl_common.sharcb@0x357f0 paired compute shader 30's control with a vertex
+    # shader's code, a shader the game never loads, and its SPH came to the translator as an instruction ("Ampere instruction 481 at 0x0"). Each section counts with its own
+    # length (ctl_len), not the length an entry gives it, which for such a false entry covers real entries after it
+    spans = {(c, c + ctl_len(s[2])) for _, c, s in found}
+    out = [s for a, _, s in found if not any(lo <= a < hi for lo, hi in spans)]
     bahs_variations(d, label, [o[0] for o in out])
     return out
 
@@ -225,7 +231,9 @@ def ndsr_shaders(d, label):
     records point at control sections. Read from +0x10 the same pack gave no shader, the upscaler's draws were skipped and every 3D frame reached the window black"""
     if d[:4] != b'NDSR' or len(d) < 0x20: return []
     def records_from(o):   # how many of the first records point at an NVN2 control section
-        return sum(1 for c, cl, _, _ in struct.iter_unpack('<4I', d[o:o + 16 * 16]) if c + 0x48 <= len(d) and nvn2_ctl(d[c:c + 0x48]))
+        count = min(16, (len(d) - o) // 16)
+        records = struct.iter_unpack('<4I', d[o:o + 16 * count])
+        return sum(1 for c, _, _, _ in records if c + 0x48 <= len(d) and nvn2_ctl(d[c:c + 0x48]))
     out = []; o = max((0x10, 0x14), key=records_from); prog = None
     while o + 16 <= len(d):
         c, cl, k, _ = struct.unpack_from('<4I', d, o)
@@ -2154,21 +2162,24 @@ def ue3_shaders(d, label):
     return out
 
 UE_LEGACY, UE_IO = 'UE legacy pak', 'UE IoStore'
-def ue_legacy_jobs(files, parts=64):
+def ue_legacy_jobs(files, parts=64, mains=()):
     """Unreal paks whose shaders are inline in the cooked packages (uepak.inline_shaders): legacy paks (version 4, DRAGON QUEST XI S: pakchunk0-Switch.pak and pakchunk1-Switch.pak, 13.8 GB,
     and the update's *_0_P.pak) and version 11 paks without shader code archives (OCTOPATH TRAVELER II: Majesty-Switch.pak, 3.3 GB). The engine mounts them all as one view, and a patch pak
     (name ending in _P.pak) wins over the others for the same path. Only the newest copy of each path is scanned. With IoStore on (Mario & Luigi: Brothership) the cooked packages are the export bundles
     of the containers beside such a pak, the pak holding only the global shader cache of the shaders: those chunks are scanned too, the newest copy of each chunk ID (uepak.mount_order).
-    → ([(pak path, rel, (UE_LEGACY, names)) or (TOC path, rel, (UE_IO, chunk indices)), …] in about equal raw sizes, the pak and container paths taken)"""
+    A pak whose index is encrypted (Little Nightmares II: Helios-Switch.pak, version 8, every entry encrypted too) is opened with the AES key from mains, the ExeFS main of every version
+    (uepak.Keys), and its jobs carry the key: (UE_LEGACY, names, key).
+    → ([(pak path, rel, (UE_LEGACY, names[, key])) or (TOC path, rel, (UE_IO, chunk indices)), …] in about equal raw sizes, the pak and container paths taken)"""
+    key_of = uepak.Keys(mains)
     def inline(p):
         try: return uepak.inline_shaders(p)
         except (OSError, ValueError, struct.error): return False
     paks = [(p, r) for p, r in files if p.endswith('.pak') and inline(p)]
     if not paks: return [], set()
-    view = {}
+    view, keys = {}, {}
     for p, r in sorted(paks, key=lambda x: (x[1].endswith('_P.pak'), x[1])):   # patch paks last, so they replace; one view per pak folder (one per version given)
         try:   # all of a pak's names or none: a patch pak read halfway would still replace the base pak's files
-            pk = uepak.Pak(p)
+            keys[p] = key_of(p); pk = uepak.Pak(p, keys[p])
             view.update({(os.path.dirname(p), os.path.normpath(pk.mount + name)): (p, r, name, pk.entry(name)['raw']) for name in pk.files})
         except (OSError, ValueError) as e: print(f'[RED] /{r}: the pak cannot be read ({e}); its shaders are left out', flush=True)
     chunks, taken, folders = {}, {p for p, _ in paks}, {os.path.dirname(p) for p, _ in paks}
@@ -2181,12 +2192,13 @@ def ue_legacy_jobs(files, parts=64):
         taken.update([p, *t.ucas_paths()])
         chunks.update({(os.path.dirname(p), t.ids[i]): (p, r, i, t.ranges[i][1]) for i in bundles})
     jobs = []
+    def job(p, r, tag, ns): return (p, r, (tag, tuple(ns), keys[p]) if tag == UE_LEGACY and keys.get(p) else (tag, tuple(ns)))
     for tag, items in ((UE_LEGACY, view.values()), (UE_IO, chunks.values())):
         cur, size, step = collections.defaultdict(list), 0, sum(v[3] for v in items) / parts
         for p, r, name, raw in sorted(items, key=lambda x: (x[1], x[2])):
             cur[(p, r)].append(name); size += raw
-            if size >= step: jobs += [(p_, r_, (tag, tuple(ns))) for (p_, r_), ns in cur.items()]; cur, size = collections.defaultdict(list), 0
-        jobs += [(p_, r_, (tag, tuple(ns))) for (p_, r_), ns in cur.items()]
+            if size >= step: jobs += [job(p_, r_, tag, ns) for (p_, r_), ns in cur.items()]; cur, size = collections.defaultdict(list), 0
+        jobs += [job(p_, r_, tag, ns) for (p_, r_), ns in cur.items()]
     return jobs, taken
 
 _PAKS = {}
@@ -2202,10 +2214,10 @@ def ue_packages(items, out, shown=8):
             if lost <= shown: print(f'[RED] {why} (its shaders are left out)', flush=True)
     return ('unreadable', first, lost) if lost else None
 
-def ue_legacy_shaders(path, rel, names, out):
+def ue_legacy_shaders(path, rel, names, out, key=None):
     """Files of an Unreal pak with inline shaders (ue_legacy_jobs), each decoded block by block (Zlib and LZ4 in uepak.py; others with the game's own decoder, DRAGON QUEST XI S: LZ5) and scanned
-    for the shader records the engine keeps inline → ue_packages's extra"""
-    pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
+    for the shader records the engine keeps inline; key: the AES key of a pak whose index and entries are encrypted (ue_legacy_jobs) → ue_packages's extra"""
+    pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path, key))
     label = lambda name: re.sub(r"^(\.\./)+", "", os.path.normpath(pk.mount + name))
     return ue_packages(((f'/{rel}#{label(name)}', lambda name=name: pk.read(name, decode=oodle)) for name in names), out)
 
@@ -2891,13 +2903,14 @@ def ue_shaders(d, label):
     return out
 
 def var_pairs(found):
-    """(vertex key, pixel key) within the same BNSH variation; (vertex key, pixel key, 'prog') within the same BAHS program variation (bahs_variations).
-    The tables stay separate; dmsh_build.py pads against both, as the pipeline prebuild uses both."""
+    """(vertex or mesh key, pixel key) within the same BNSH variation; (vertex key, pixel key, 'prog') within the same BAHS program variation (bahs_variations).
+    The tables stay separate; dmsh_build.py pads against both, as the pipeline prebuild uses both. A mesh shader is the stage before the pixel shader as a vertex shader is
+    (NVN2: Ocarina of Time's foliage meshes leave locations unwritten that their pixel shaders read, which dmsh_meshstage.to_stage pads)."""
     var = collections.defaultdict(dict)
     for where, st, ctl, code in found:
         g = where if '#var' in where else BAHS_VAR.get(where)
         if g: var[g][st] = skey(ctl, code)
-    return {(v['vs'], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() if 'vs' in v and 'ps' in v}
+    return {(v[st], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() for st in ('vs', 'ms') if st in v and 'ps' in v}
 
 def unreadable_why(e, name):
     why = str(e).removeprefix('[RED] ') if isinstance(e, SystemExit) else f'{type(e).__name__}: {e}'
@@ -2938,7 +2951,7 @@ def scan_file_in(args):
         zip_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)
-        lost = ue_legacy_shaders(path, rel, args[2][1], found)
+        lost = ue_legacy_shaders(path, rel, args[2][1], found, *args[2][2:])
         return rel, uniq_keys(found), var_pairs(found), lost or trees
     if len(args) > 2 and args[2][0] == UE_IO:   # export bundles of an IoStore container beside such a pak (ue_legacy_jobs)
         lost = ue_io_shaders(path, rel, args[2][1], found)
@@ -3173,6 +3186,21 @@ def main():
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
     J = int(os.environ.get('J', '8'))
+    big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
+    pak_jobs, paks = kpka_jobs(files)   # Monster Hunter Rise's PAKs: the newest copy of each path, in ranges of entries
+    tr_jobs, trp = trpfs_jobs(files)   # Pokémon Legends: Z-A's Trinity packs (data.trpfs and its index data.trpfd), decoded by the game's own Oodle in the Mac host
+    ue_jobs, uep = ue_legacy_jobs(files, mains=main_v)   # Unreal paks with inline shaders: DRAGON QUEST XI S's legacy ones (the game's own LZ5 in the Mac host), OCTOPATH TRAVELER II's (Zlib)
+    bd_jobs, bdts = bdt_jobs(files)   # Dark Souls Remastered's dvdbnd archives: the entries of each .bdt by its .bhd5 index, in ranges
+    arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
+    pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
+    ck_jobs, cpks = cpk_jobs(files)   # Bayonetta 2's CRI CPK archives (CRILAYLA entries)
+    cr_jobs, cras = cra_jobs(files)   # Mario Tennis Fever's CRA archive, its index in the NRO the game decodes at run time
+    zp_jobs, zips = zip_jobs(files)   # Portal's game.zip (Deflate members)
+    ah_jobs, arhs = arh_jobs(files)   # Monolith's ARH1/ARD archives and embedded XBC1/HCPS programs
+    fb_jobs, fbs = frostbite_jobs(files)   # EA SPORTS FC 27's Frostbite bundles, Oodle Leviathan decoded by the game's own decoder in the Mac host
+    pd_jobs, pdats = pdat_jobs(files)   # Kirby Air Riders' PDAT archives: the PMAP records in byte ranges
+    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs + cr_jobs + zp_jobs + ah_jobs + fb_jobs + pd_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in cras and p not in zips and p not in arhs and p not in fbs and p not in pdats]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results = scan_inputs(ex, mains, files, first_image)
     del first_image
