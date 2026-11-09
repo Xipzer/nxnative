@@ -4810,6 +4810,16 @@ static int udc_on(void) {
 // Mario: off by default (only DM_NVN_TBDR=1 turns it on). These optimizations infer read / write relations from "which textures are bound in texture slots", while 38% of this game's shaders use bindless textures (handles in uniform buffers, NVN_RB_TEXU),
 //   so the inference would miss readers - e.g. deciding an attachment is never read afterwards and not storing it. Turn them back on once they recognize bindless readers.
 static int tbdr_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TBDR"); v = e && !strcmp(e, "1"); if (!v) MLOG("TBDR optimizations off by default (this game uses bindless textures; DM_NVN_TBDR=1 turns them on)"); } return v; }
+// DM_NVN_TBDR=lite (profile key tbdr lite): only the load / store savings of TBDR mode that reorder nothing, each a proof about one pass or one submission: a colour attachment whose
+// first draw covers every pixel is not loaded (first_draw_covers), a pass that never tests or writes depth or stencil does not attach them (pass_ds_need), and an attachment the
+// rest of the submission clears before anything reads it is not stored (sdx_decide). Deferral, merging, hoisting and the cross-submission trial (xv) stay off, and in-pass
+// uniform updates stay deferred (ubd_on), which full TBDR mode gives up: with it Breath of the Wild's occlusion passes split per draw (GPU 5.8 to 14 ms on an M4 Max).
+// A submission with a draw or dispatch whose shaders read textures through handles in uniforms (bindless: no slot names the texture) keeps every store (sdx_walk)
+static int tbdr_ls(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_NVN_TBDR"); v = tbdr_on() || (e && !strcmp(e, "lite")); if (v && !tbdr_on()) MLOG("DM_NVN_TBDR=lite: full-cover loads, unused depth / stencil and stores cleared before a read are skipped; no pass reordering"); }
+    return v;
+}
 static int rt_range_on(void) { static int v = -1; if (v < 0) { const char *e=getenv("DM_NVN_RT_RANGE"); v=e && !strcmp(e,"1"); } return v; }   // Narrow candidate, off by default
 // ---------- In-process A/B phases (DM_AB, measurement) ----------
 // DM_AB=<frames> splits the run into phases of that many frames (frame f is in phase f / frames) and alternates the switches whose value is ab (sw_mode; DM_NVN_BARRIER=ab so far):
@@ -5233,6 +5243,7 @@ static id<MTL4RenderCommandEncoder> rp_begin(void) { if (g_enc && g_rp_aw) rp_en
 static void *rp_begin_ex_(int clear_only);
 static void *rp_begin_ex_raw(int clear_only) { AP_B; void *e = rp_begin_ex_(clear_only); AP_E(1); return e; }
 static void bare_dims(NSUInteger *w, NSUInteger *h);
+static uint64_t g_draw_seq, g_fb_early_seq;   // fb_prepare, fb_tile_plan
 static void *rp_begin_ex_(int clear_only) {
     if (g_enc) return (__bridge void *)(g_enc);
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
@@ -5256,7 +5267,7 @@ static void *rp_begin_ex_(int clear_only) {
         pd.colorAttachments[i].clearColor = R.cc[i];
         if (R.clear_c[i]) PD("C %llu c%d cleared to %g,%g,%g,%g", g_stat_pass + 1, i, R.cc[i].red, R.cc[i].green, R.cc[i].blue, R.cc[i].alpha);
         if (bcrt_is(pd.colorAttachments[i].texture)) { pd.colorAttachments[i].storeAction = MTLStoreActionStore; continue; }   // a shadow (bcrt_attach): loaded and stored as is, outside the bookkeeping below
-        int cov = tbdr_on() && !R.clear_c[i] && (g_fd_dw || g_fd_di) && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
+        int cov = tbdr_ls() && !R.clear_c[i] && (g_fd_dw || g_fd_di) && g_fb_early_seq != g_draw_seq && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
         if (!R.clear_c[i] && (g_fd_dw || g_fd_di) && !cov) PD("Q %llu c%d load cannot be skipped why=%d", g_stat_pass + 1, i, g_fd_why);
         if (cov) {
             static int probe = -1; if (probe < 0) { probe = getenv("DM_NVN_LOADPROBE") ? atoi(getenv("DM_NVN_LOADPROBE")) : 0; if (probe) MLOG("DM_NVN_LOADPROBE: attachments whose load can be skipped are cleared to a sentinel color and read back to check"); }
@@ -11153,7 +11164,7 @@ static void sd_finish(void) {
     if (!g_nsd) return;
     uint8_t nst[SD_ATT_MAX];
     // Unchanged, loaded attachments already have their content in memory. Their proof depends only on writes in this pass, independently of future bindless readers or the optional lookahead.
-    if (tbdr_on() && sdx_decide(nst)) { for (int i = 0; i < g_nsd; i++) if (nst[i] == 2) g_sd[i].state = 2; else sd_need(&g_sd[i], nst[i] >> 2); }
+    if (tbdr_ls() && sdx_decide(nst)) { for (int i = 0; i < g_nsd; i++) if (nst[i] == 2) g_sd[i].state = 2; else sd_need(&g_sd[i], nst[i] >> 2); }
     else for (int i = 0; i < g_nsd; i++) sd_need(&g_sd[i], 6);   // Pass ended outside the list / index unavailable: always write back
     for (int i = 0; i < g_nsd; i++) {
         sd_att *t = &g_sd[i]; int udc_dead = udc_on() && t->load && !t->wrote;
@@ -11641,7 +11652,7 @@ static uint64_t h_ser(uint64_t h) { int tid = (int)(h & 0xfffff); return tid ? a
 typedef struct { uint32_t seq, rtseq; uint64_t ser; const uint8_t *op; uint16_t lv, sl; uint8_t kind, plane, anyls, why; } sdx_ev;   // plane 0 color 8 depth-stencil (ATT) 1 depth 2 stencil (CLEAR)
 enum { SDX_READ = 1, SDX_NEED, SDX_ATT, SDX_CLEAR };
 #define SDX_NONE 0xffffffffu
-static sdx_ev *g_sdx, *g_sdx_tmp; static uint32_t g_sdx_n, g_sdx_cap; static int g_sdx_ok;   // Index valid
+static sdx_ev *g_sdx, *g_sdx_tmp; static uint32_t g_sdx_n, g_sdx_cap; static int g_sdx_ok; static uint64_t g_sdx_bindless;   // Index valid
 // Candidate textures (those that have been attachments) -> buckets: open addressing; a texture that has not yet been an attachment when an event occurs is irrelevant to any render pass that ended before then, so it is not recorded
 #define SDX_HB 2048
 static uint64_t g_sdx_hk[SDX_HB]; static uint16_t g_sdx_hb[SDX_HB]; static uint32_t g_sdx_nb, g_sdx_bcnt[SDX_HB + 1], g_sdx_bst[SDX_HB + 1];
@@ -11694,6 +11705,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
                 const prog_t *pp = h.op == OP_DISPATCH ? g_pp_cprog : g_pp_prog; __unsafe_unretained NvProg *pr = pp ? prog_get(pp) : nil;
                 if (!pr) { for (int st = 0; st < 6; st++) for (int k = 0; k < NTEX + 32; k++) if (g_pp_slot[st][k]) sdx_ev_add((sdx_ev){seq, 0, g_pp_slot[st][k], p, 0, 0, SDX_READ, 0, 0, 1}); }
                 else for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || (h.op == OP_DISPATCH) != (st == 5)) continue;
+                    if (!tbdr_on() && (sh->rf.bindless || sh->rf.dyn || sh->rf.pool)) { g_sdx_ok = 0; g_sdx_bindless++; return; }   // lite: a reader no slot names, so no store of this submission is proven dead
                     for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; int k = b->kind == NVN_RB_IMG ? NTEX + b->reg : (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) ? b->reg : -1;
                         if (k < 0 || k >= NTEX + 32 || sh->stage < 0 || sh->stage >= 6) continue; uint64_t ser = g_pp_slot[sh->stage][k];
                         if (ser) sdx_ev_add((sdx_ev){seq, 0, ser, p, 0, 0, SDX_READ, 0, 0, 1}); } }
@@ -11718,7 +11730,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
 static void mtl_sub_index_(const uint64_t *h, int n);
 void mtl_sub_index(const uint64_t *h, int n) { cp_stamp start = cp_begin(); mtl_sub_index_(h, n); cp_end(7, start); }
 static void mtl_sub_index_(const uint64_t *h, int n) {   // Start of submit (hle_nvn.c QueueSubmitCommands): build this submit's store lookahead index
-    g_xv_ntouch = 0; g_sdx_n = g_sdx_nop = 0; g_rtx_n = g_drx_n = 0; g_exec_seq = 0; g_sdx_ok = tbdr_on();
+    g_xv_ntouch = 0; g_sdx_n = g_sdx_nop = 0; g_rtx_n = g_drx_n = 0; g_exec_seq = 0; g_sdx_ok = tbdr_ls();
     if (!g_sdx_ok) { g_xv_n = 0; g_xv_block = 1; return; }   // Index unavailable: clear the ledger and add nothing in this submit (the next touch cannot be verified)
     g_xv_block = 0;
     memset(g_sdx_hk, 0, sizeof g_sdx_hk); g_sdx_nb = 0;
@@ -12705,9 +12717,40 @@ static int geo_drawing(void);   // a draw of the geometry path (nvn_geometry.inc
 static uint64_t g_fb_tile_draws, g_fb_tile_wait, g_fb_tseq; static id<MTLFunction> g_fb_tfn; static uint8_t g_fb_tlmap[8]; static pso_fz_desc g_fb_tdesc;
 enum { FB_TP_MAX = 256 };
 static struct { pso_key k; id<MTLRenderPipelineState> ps; int done; } g_fb_tp[FB_TP_MAX]; static int g_fb_tp_n; static os_unfair_lock g_fb_tp_lock = OS_UNFAIR_LOCK_INIT;
-static int fb_tile_ready(NvShader *vs, NvShader *fs, id<MTLFunction> fn, const uint8_t lmap[8], const pso_fz_desc *fz) {
+// A draw that opens its pass (no pass open at fb_prepare) can read the tile too: the pass loads the attachment, so the tile holds what a snapshot would. Its pipeline is named by
+// the formats of a pass that is not open yet, so they are learned: the first such draw of a program on a set of targets takes its snapshot and notes the pass rp_begin_ex opened
+// for it (fb_early_after); later ones plan with those formats and are checked against the pass that really opened. One that differs (another depth / stencil mode, an added
+// attachment) ends that pass, takes the snapshot and opens it again, and after three of those the entry plans no more. Breath of the Wild opened about 3.75 passes a frame with
+// such a draw, each a full-size copy (0.45 ms of a 6 ms frame on an M4 Max, 8% of the submit thread's instructions). DM_NVN_FB_TILE_EARLY=0: those draws take snapshots, as before
+typedef struct { uint32_t cfmt[8], dfmt, sfmt, samples, tw, th; } fb_pinfo;
+static struct { uint64_t key; fb_pinfo pi; uint8_t ok, fails; } g_fb_el[64];
+static uint64_t g_fb_early_seq, g_fb_learn_seq, g_fb_early_key, g_fb_early_n, g_fb_early_miss; static int g_fb_noearly;
+static int fb_early_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_TILE_EARLY"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("same-pass feedback sampling: a draw that opens its pass takes a snapshot (DM_NVN_FB_TILE_EARLY=0)"); } return v; }
+static uint64_t fb_early_keyof(NvProg *pr) {
+    uint64_t h = 0x9e3779b97f4a7c15ull ^ (uint64_t)(uintptr_t)pr->sh[0];
+#define FB_MIX(v) (h = (h ^ (uint64_t)(v)) * 0xff51afd7ed558ccdull, h ^= h >> 29)
+    FB_MIX((uintptr_t)pr->sh[1]); FB_MIX(R.rt.n);
+    for (int k = 0; k < R.rt.n && k < 8; k++) { FB_MIX(R.rt.color[k] ? R.rt.color[k]->serial : 0); FB_MIX(R.rt.color[k] && R.rt.has_cview[k] && R.rt.cview[k].set_levels ? R.rt.cview[k].base_level + 1 : 0); }
+    FB_MIX(R.rt.depth ? R.rt.depth->serial : 0);
+#undef FB_MIX
+    return h ? h : 1;
+}
+static void fb_pinfo_now(fb_pinfo *pi) { memset(pi, 0, sizeof *pi); memcpy(pi->cfmt, g_pass.cfmt, sizeof pi->cfmt); pi->dfmt = g_pass.dfmt; pi->sfmt = g_pass.sfmt; pi->samples = g_pass.samples; pi->tw = (uint32_t)g_pass.tw; pi->th = (uint32_t)g_pass.th; }
+// After rp_begin_ex opened the pass of a draw fb_prepare met with none open. 0: the draw planned a tile read for a pass that is not this one (the caller goes back to a snapshot)
+static int fb_early_after(void) {
+    if (g_fb_learn_seq == g_draw_seq) { g_fb_learn_seq = 0; __typeof__(g_fb_el[0]) *e = &g_fb_el[g_fb_early_key & 63];
+        if (e->key != g_fb_early_key) { e->key = g_fb_early_key; e->fails = 0; } fb_pinfo_now(&e->pi); e->ok = !g_sm_pass; return 1; }
+    if (g_fb_early_seq != g_draw_seq) return 1;
+    g_fb_early_seq = 0; __typeof__(g_fb_el[0]) *e = &g_fb_el[g_fb_early_key & 63]; fb_pinfo now; fb_pinfo_now(&now);
+    if (e->key == g_fb_early_key && !g_sm_pass && !memcmp(&now, &e->pi, sizeof now)) { g_fb_early_n++; return 1; }   // NOLINT(bugprone-suspicious-memory-comparison): fb_pinfo_now zeroes the whole struct first
+    if (e->key == g_fb_early_key) { e->pi = now; if (e->fails < 255) e->fails++; }
+    g_fb_early_miss++;
+    static int once; if (!once++) MLOG("same-pass feedback sampling: a draw planned a tile read for the pass it opens, and another pass opened (formats, size or a slice-merged pass); it takes a snapshot (first case pass %llu)", g_stat_pass);
+    return 0;
+}
+static int fb_tile_ready(NvShader *vs, NvShader *fs, id<MTLFunction> fn, const uint8_t lmap[8], const pso_fz_desc *fz, const fb_pinfo *pi) {
     const uint8_t *l0 = g_pso_lmap; g_pso_lmap = lmap;   // the key pso_get makes for this draw (atest_key and lop_key read the mapping)
-    pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, 1); g_pso_lmap = l0;
+    pso_key k; pso_key_fill(&k, vs, fs, pi->cfmt, pi->dfmt, pi->sfmt, pi->samples, 1); g_pso_lmap = l0;
     memcpy(k.lmap, lmap, 8); k.fsfn = (__bridge void *)fn;
     if (hm_get_id(&g_pso, &k)) return 1;
     os_unfair_lock_lock(&g_fb_tp_lock); int i = 0; for (; i < g_fb_tp_n; i++) if (!memcmp(&g_fb_tp[i].k, &k, sizeof k)) break;   // NOLINT(bugprone-suspicious-memory-comparison): pso_key_fill zeroes the whole key first, padding included (as for sm_amp_get's table)
@@ -12727,9 +12770,18 @@ static int fb_tile_ready(NvShader *vs, NvShader *fs, id<MTLFunction> fn, const u
 // The texture slots (bit per slot 0-255) whose attachment this draw reads from the tile; 0 = none (then g_fb_tfn and the rest are not this draw's)
 static int fb_tile_plan(NvProg *pr, uint32_t wm, uint64_t tile[4]) {
     NvShader *vs = pr->sh[0], *fs = pr->sh[1]; memset(tile, 0, 4 * sizeof *tile);
-    if (g_fb_mode != 1 || !g_enc || !vs || !(fs->rf.fc_proj | fs->rf.fc_fpos) || !fs->rf.color_known || !fs->rf.nfo || !fb_tile_on() || tbdr_on()) return 0;
-    if (atest_on() || lop_on() || g_pass.samples > 1 || S.rast_discard || g_sm_pass || geo_drawing() || ms_fs_override(fs)) return 0;
-    NSUInteger W = g_pass.tw, H = g_pass.th;
+    if (g_fb_mode != 1 || !vs || !(fs->rf.fc_proj | fs->rf.fc_fpos) || !fs->rf.color_known || !fs->rf.nfo || !fb_tile_on() || tbdr_on()) return 0;
+    fb_pinfo pi;
+    if (g_enc) { fb_pinfo_now(&pi); if (g_sm_pass) return 0; }
+    else {   // the draw opens its pass: the formats learned for this program on these targets (fb_early_after)
+        if (!fb_early_on() || g_fb_noearly || g_fz_checking) return 0;
+        uint64_t key = fb_early_keyof(pr); __typeof__(g_fb_el[0]) *e = &g_fb_el[key & 63]; g_fb_early_key = key;
+        if (e->key != key) { g_fb_learn_seq = g_draw_seq; return 0; }
+        if (!e->ok || e->fails >= 3) return 0;
+        pi = e->pi;
+    }
+    if (atest_on() || lop_on() || pi.samples > 1 || S.rast_discard || geo_drawing() || ms_fs_override(fs)) return 0;
+    NSUInteger W = pi.tw, H = pi.th;
     int fx[32]; for (int i = 0; i < 32; i++) fx[i] = -1; uint8_t fbmask = 0;
     for (int i = 0; i < fs->rf.nb; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->reg >= NTEX) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff); if (!tid) continue;
@@ -12743,7 +12795,7 @@ static int fb_tile_plan(NvProg *pr, uint32_t wm, uint64_t tile[4]) {
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t;
             if (t.textureType != MTLTextureType2D || t.mipmapLevelCount != 1 || t.sampleCount != 1 || base.parentTexture || (t.parentTexture ? t.parentRelativeLevel : 0) != (NSUInteger)lv
-                || (t.parentTexture ? t.parentRelativeSlice : 0) != (NSUInteger)sl || t.pixelFormat != (MTLPixelFormat)g_pass.cfmt[k] || b->dtt != MTLTextureType2D
+                || (t.parentTexture ? t.parentRelativeSlice : 0) != (NSUInteger)sl || t.pixelFormat != (MTLPixelFormat)pi.cfmt[k] || b->dtt != MTLTextureType2D
                 || !sw_tile(t)
                 || MAX(base.width >> lv, 1ul) != W || MAX(base.height >> lv, 1ul) != H || (fs->rf.fc_mixed[b->reg >> 6] >> (b->reg & 63) & 1)) break;
             int any = 0, ok = 1;
@@ -12756,8 +12808,9 @@ static int fb_tile_plan(NvProg *pr, uint32_t wm, uint64_t tile[4]) {
     uint8_t lmap[8]; memset(lmap, 0xff, 8); for (int q = 0; q < 8; q++) if (fs->rf.color_mask >> q & 1) lmap[q] = (uint8_t)q;
     pso_fz_desc d; memset(&d, 0, sizeof d); d.kind = 1; d.fbmask = fbmask; for (int i = 0; i < 32; i++) d.fx[i] = (int8_t)fx[i];
     id<MTLFunction> fn = bf_fn(fs, fx, fbmask, lmap);
-    if (!fn || !fb_tile_ready(vs, fs, fn, lmap, &d)) { g_fb_tile_wait += fn != nil; memset(tile, 0, 4 * sizeof *tile); return 0; }
+    if (!fn || !fb_tile_ready(vs, fs, fn, lmap, &d, &pi)) { g_fb_tile_wait += fn != nil; memset(tile, 0, 4 * sizeof *tile); return 0; }
     g_fb_tfn = fn; memcpy(g_fb_tlmap, lmap, 8); g_fb_tdesc = d;
+    if (!g_enc) g_fb_early_seq = g_draw_seq;
     return 1;
 }
 // The one level a draw's sampler lets it read through texture slot reg (combined handle's sampler sid), counted from the view's base, or -1. Only a combined handle's sampler (the shader's
@@ -13618,7 +13671,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (!g_enc && tbdr_on() && !g_fz_checking && !g_geo_program) fuse_try();   // Readable tile render pass merge is on by default; when the structure / same-pixel proof does not hold it still falls back to a normal render pass, and it is not re-entered during the CHECK redraw
     if (!g_enc && !tbdr_on() && !g_geo_program && cshoist_on() && !g_split_resume) cs_hoist_try(pr, dw, di);   // see DM_NVN_CS_HOIST
     g_split_resume = 0;
-    int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 attach neither, 3 attach stencil only, 4 attach depth only
+    int need = g_enc || !tbdr_ls() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 attach neither, 3 attach stencil only, 4 attach depth only
     int skip_d = mode != 0;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
@@ -13642,6 +13695,12 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         // A replayed draw may have ended Q's encoder to align a GPU-written stream. Restore this draw's streams and encoder.
         g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
         if (g_enc && g_pass.layered != g_rp_layered) rp_end();
+        vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di); g_fd_dw = dw; g_fd_di = di; en = rp_begin_ex(mode); g_fd_dw = NULL; g_fd_di = NULL; g_rp_layered = 0;
+        if (!en) return;
+    }
+    if ((g_fb_early_seq == g_draw_seq || g_fb_learn_seq == g_draw_seq) && !fb_early_after()) {   // planned a tile read for another pass than the one that opened: its snapshot, then the pass again
+        rp_end(); g_fb_noearly = 1; fb_prepare(pr); g_fb_noearly = 0;
+        g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
         vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di); g_fd_dw = dw; g_fd_di = di; en = rp_begin_ex(mode); g_fd_dw = NULL; g_fd_di = NULL; g_rp_layered = 0;
         if (!en) return;
     }
