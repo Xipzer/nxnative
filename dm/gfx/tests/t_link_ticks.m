@@ -19,10 +19,8 @@ static int test_pthread_cond_timedwait(pthread_cond_t *, pthread_mutex_t *, cons
 #define clock_gettime test_clock_gettime
 #define pthread_cond_timedwait test_pthread_cond_timedwait
 #define nvn_game_fps nvn_game_fps_mtl_default
-#define nvn_var_fps nvn_var_fps_mtl_default   // the same for nvn_var_fps (a variable frame step)
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
-#undef nvn_var_fps
 #undef pthread_cond_timedwait
 #undef clock_gettime
 #define g_ft g_ft_hle

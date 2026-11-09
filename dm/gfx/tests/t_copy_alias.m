@@ -1,9 +1,7 @@
 // Copies through distinct Metal buffers and sparse guest aliases must see earlier GPU writes.
 #define nvn_game_fps nvn_game_fps_mtl_default
-#define nvn_var_fps nvn_var_fps_mtl_default   // the same for nvn_var_fps (a variable frame step)
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
-#undef nvn_var_fps
 #define g_ft g_ft_hle
 #include "../nvn/hle_nvn.c"
 #undef g_ft
@@ -97,7 +95,10 @@ static void shader_alias(void) {
         "kernel void w(device uint *a [[buffer(0)]], constant uint &s [[buffer(2)]], uint i [[thread_position_in_grid]]) { a[i] = s + i; }\n"
         "kernel void r(device const uint *b [[buffer(0)]], device uint *o [[buffer(1)]], uint i [[thread_position_in_grid]]) { o[i] = b[i]; }\n" options:nil error:&e];
     if (!l || !a || !b || !io) { fprintf(stderr, "%s\n", e.localizedDescription.UTF8String); abort(); }
-    id<MTLComputePipelineState> pw = [g_dev newComputePipelineStateWithFunction:[l newFunctionWithName:@"w"] error:&e], pr = [g_dev newComputePipelineStateWithFunction:[l newFunctionWithName:@"r"] error:&e];
+    id<MTLFunction> write_fn = [l newFunctionWithName:@"w"], read_fn = [l newFunctionWithName:@"r"];
+    if (!write_fn || !read_fn) abort();
+    id<MTLComputePipelineState> pw = [g_dev newComputePipelineStateWithFunction:write_fn error:&e], pr = [g_dev newComputePipelineStateWithFunction:read_fn error:&e];
+    if (!pw || !pr) abort();
     id<MTLBuffer> seed = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
     res_add(a); res_add(b); res_add(io); res_add(seed); atomic_fetch_add(&g_big_n, 1);
     CHECK(resource_vis() & MTL4VisibilityOptionResourceAlias, "overlapping buffers turn on the alias flush");

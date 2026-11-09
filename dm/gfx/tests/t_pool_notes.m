@@ -5,10 +5,8 @@
 // what a table built whole holds.
 // Ocarina of Time maps and unmaps virtual pool runs dozens of times a second and registers something between most of its draws; each of those walked its 33,025-entry texture table
 #define nvn_game_fps nvn_game_fps_mtl_default
-#define nvn_var_fps nvn_var_fps_mtl_default   // the same for nvn_var_fps (a variable frame step)
 #include "../nvn/nvn_mtl.m"
 #undef nvn_game_fps
-#undef nvn_var_fps
 #define g_ft g_ft_hle
 #include "../nvn/hle_nvn.c"
 #undef g_ft

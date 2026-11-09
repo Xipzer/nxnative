@@ -5,9 +5,7 @@
 // its last place and each new place reads the memory (the CPU's fill behind a GPU-written place, the GPU's write to the memory as a buffer), a tile cut by the level's edge shares nothing, and a
 // new pool over the same memory never finds the old pool's tile.
 #define nvn_game_fps nvn_game_fps_mtl_default
-#define nvn_var_fps nvn_var_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
-#undef nvn_var_fps
 #undef nvn_game_fps
 #define g_ft g_ft_hle
 #include "../nvn/hle_nvn.c"

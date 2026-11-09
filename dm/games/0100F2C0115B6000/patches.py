@@ -202,7 +202,7 @@ CAPABILITIES = {'277178b7dba1b6d4949a84778d4abc58': ('CAMERA_ASPECT',)}
 BINDING = [
     {'what': '60 fps frame step and render scale', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own timing object",
-     'blocked': 'frame-step stubs have no function-matched form yet'},
+     'blocked': 'a function-matched frame step (MATCH_FRAME_STEP) covers one function; these stubs span several'},
     {'what': 'TOTK perspective camera and viewport aspect producers', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's four projection update sites and their object layouts; drawable publication and presentation are general host behavior",
      'blocked': 'projection producers have no reviewed function fingerprints yet',
