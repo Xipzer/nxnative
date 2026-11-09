@@ -39,6 +39,7 @@ for s in srcs:
     if s == os.path.join(host, 'main.c'): os.symlink(s, f'{gen}/main/main.c'); continue
     flat = os.path.relpath(s, os.path.dirname(host)).replace('/', '__')   # Same-named files in different directories do not collide
     os.symlink(s, f'{gen}/src/{flat}')
+MAC_ONLY_FRAMEWORKS = {'Cocoa', 'IOBluetooth'}   # Cocoa: UIKit's side has what it gives; IOBluetooth (Switch 2 controllers, pad_switch2_apple.h) has no iOS framework, and its link failed the iOS build
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
+print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f not in MAC_ONLY_FRAMEWORKS))
