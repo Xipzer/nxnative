@@ -17295,7 +17295,17 @@ static int link_30hz(void) { return !front_fullscreen() || front_screen_variable
 // The Mac front end first switches such a screen to a fixed-rate mode (front_screen_match: 60 Hz, 60.0 fps at latency 1 there), so this is the fallback for a screen with
 // no such mode or with DM_SCREEN_MATCH=0: the 120 Hz link held 59.2 fps, about 2% of frames up 25 ms. A window keeps the 60 Hz link, where every present lands on its
 // target (docs/reference/frame-rate.md)
-static int link_vrr_120(void) { int hz = front_screen_max_fps(); return !g_present_link_env && front_fullscreen() && front_screen_variable_refresh() && hz >= 120 && hz % 120 == 0; }
+// On an iPhone or iPad with a 120 Hz screen the same holds for another reason: the system slows the GPU until a frame fills its 16.7 ms, and with the 60 Hz link that left
+// almost nothing spare. Breath of the Wild on an iPad Pro M4 at a locked 60 (120% render scale, MetalFX, cool, runs alternated): the GPU busy 15.3 to 16.0 ms of every frame
+// with the 60 Hz link and 14.2 to 14.3 ms with the 120 Hz one, the frame interval's p99 17.7 to 18.0 ms against 16.8 to 17.1 ms. No link at all (mode 0) gave the slack and a
+// worse p99 (17.8 to 18.3 ms); frame latency 1 or 2 made no difference
+static int link_vrr_120(void) { int hz = front_screen_max_fps();
+#if TARGET_OS_IPHONE
+    return !g_present_link_env && hz >= 120 && hz % 120 == 0;
+#else
+    return !g_present_link_env && front_fullscreen() && front_screen_variable_refresh() && hz >= 120 && hz % 120 == 0;
+#endif
+}
 static int g_link_mode = 1;   // Current mode of the display link object: 1 / 2 same as g_dm_present_link, 3 = power-saving mode 30 Hz, 4 = a variable frame step's cap
 static void *link_main(void *arg) {   // Display link thread: started when switching to display-link mode, exits when switching back to 0
     (void)arg;
