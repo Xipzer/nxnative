@@ -523,15 +523,16 @@ static void cut_boundary_case(void) {
     clear(MTLClearColorMake(0, 0, 0, 1)); rp_end();
     id cb0 = g_cb;
     mtl_sub_counter((uint64_t)rep.contents, 0x10);
-    atomic_fetch_add(&g_seg_inflight, 1);
+    atomic_fetch_add(&g_seg_inflight, 1); g_seg_sig++;   // a segment committed whose feedback and queue event have not come (seg_running)
     g_stat_draw += (uint64_t)cut_draws(); sub_cut();
     CHECK(g_cb == cb0 && g_seg == 1, "with work running: a boundary, no commit");
     CHECK(g_sclk && g_sclk->nb == 2, "and its timestamp slot");
     clear(MTLClearColorMake(0, 1, 0, 1)); rp_end();
     mtl_sub_counter((uint64_t)rep.contents + 16, 0x10);
-    atomic_fetch_sub(&g_seg_inflight, 1);
+    g_seg_sig--;   // its event came; the feedback has not: the GPU has run out, whatever the count says
     g_stat_draw += (uint64_t)cut_draws(); sub_cut();
     CHECK(g_cb != cb0 && g_seg == 2, "with nothing running: a commit");
+    atomic_fetch_sub(&g_seg_inflight, 1);
     clear(MTLClearColorMake(0, 0, 1, 1)); rp_end();
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "the segments completed");
     uint64_t r0[2], r1[2]; memcpy(r0, rep.contents, 16); memcpy(r1, (uint8_t *)rep.contents + 16, 16);

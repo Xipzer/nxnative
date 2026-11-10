@@ -1772,6 +1772,9 @@ static void power_line(uint64_t frame) {
           LOG("[nvn] GPU feed up to frame %llu: per frame the GPU ran %.2f ms and had nothing to run for %.2f ms between command buffers; a command buffer's end is reported %.2f ms later (largest %.2f ms, %llu reports); long passes split %llu, not split with a segment still running %llu",
               frame, (v[1] - pv[1]) / 1e6 / nfr, (v[0] - pv[0]) / 1e6 / nfr, dn ? (v[2] - pv[2]) / 1e6 / dn : 0.0, v[4] / 1e6, (unsigned long long)dn, (unsigned long long)(v[5] - pv[5]), (unsigned long long)(v[6] - pv[6]));
           memcpy(pv, v, sizeof pv); }
+        { void mtl_tf_stats(uint64_t v[3]); static uint64_t pt[3]; uint64_t t[3]; mtl_tf_stats(t);
+          if (t[0] + t[1] > pt[0] + pt[1]) LOG("[nvn] transform feedback up to frame %llu, per frame: %.1f captures with the state on the CPU, %.1f through tf_prepare, in %.1f passes", frame, (t[0] - pt[0]) / nf, (t[1] - pt[1]) / nf, (t[2] - pt[2]) / nf);
+          memcpy(pt, t, sizeof pt); }
         char rs[400]; mtl_res_stats(rs, sizeof rs); static uint64_t pbs, pbf, pba; uint64_t bs, bf, ba; mtl_barrier_stats(&bs, &bf, &ba);
         uint64_t mtl_cut_count(void), mtl_copy_cut_count(void), mtl_blit_splits(void); void mtl_ubd_stats(uint64_t *, uint64_t *); static uint64_t pcut, pccut, pbsp, pud, puc; uint64_t cut = mtl_cut_count(), ccut = mtl_copy_cut_count(), bsp = mtl_blit_splits(), ud, uc; mtl_ubd_stats(&ud, &uc);
         void mtl_ubp_stats(uint64_t *, uint64_t *, uint64_t *); static uint64_t ppm, ppr, ppf; uint64_t pm, pr, pf_; mtl_ubp_stats(&pm, &pr, &pf_);
