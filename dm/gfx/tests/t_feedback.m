@@ -326,6 +326,13 @@ static void tile_case(const char *dir) {
     CHECK(!g_enc && g_fb_n == 1 && g_fb_count == ecopies + 1 && g_fb_tseq != g_draw_seq, "and the draw goes back to a snapshot");
     g_fb_el[g_fb_early_key & 63].fails = 3; g_fb_bar++; ecopies = g_fb_count; fb_prepare(pr);
     CHECK(g_fb_n == 1 && g_fb_count == ecopies + 1 && g_fb_early_seq != g_draw_seq, "after three such passes it plans no more");
+    {   // a texture ID remembered as naming no attachment (g_fbno) is asked again once it is registered anew
+        tex_t other; target(&other, 99796); mtl_reg_tex(662, &other, NULL);
+        S.tex[1][0] = 662; g_fb_bar++; ecopies = g_fb_count; fb_prepare(pr);
+        CHECK(g_fb_n == 0 && g_fb_count == ecopies && g_fbno.tid[662 & 255] == 662 && g_fbno.at[662 & 255] == g_fbno.gen, "a draw sampling another texture than its attachment: nothing to do, and its ID is remembered");
+        mtl_reg_tex(662, &source, NULL); fb_prepare(pr);
+        CHECK(g_fb_n == 1 && g_fb_count == ecopies + 1, "the same ID registered as the attachment is seen at the next draw");
+        S.tex[1][0] = tid; mtl_reg_tex(662, NULL, NULL); mtl_tex_release(&other); }
     S.vp[0][2] = 2; g_fb_bar++;
     clear(MTLClearColorMake(1, 0, 0, 1));
     fb_prepare(pr);

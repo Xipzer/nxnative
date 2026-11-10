@@ -12849,6 +12849,7 @@ static int fb_texu_reads(NvShader *fs, uint64_t ser) {
     return 0;
 }
 // Called before the draw opens its render pass: if a snapshot is needed, end the current render pass, copy the snapshot (or reuse a valid one) and register the substitution (used by this draw's argument encoding)
+static struct { uint64_t sig, reg; uint32_t gen, tid[256], at[256]; } g_fbno;   // texture IDs that name no attachment of the pass (fb_prepare)
 static void fb_prepare(NvProg *pr) {
     g_draw_seq++; g_fb_n = 0;
     if (g_fb_rebind) { args_dirty_all(); g_fb_rebind = 0; }   // the previous draw had a substituted binding: re-encode with the original bindings this time
@@ -12864,16 +12865,29 @@ static void fb_prepare(NvProg *pr) {
     if (R.rt.depth && !g_fb_dread && ((fs->rf.pool && pool_ds_read(R.rt.depth) && (g_fb_dread_pool = 1)) || fs->rf.dyn || (fs->rf.bindless && fb_texu_reads(fs, R.rt.depth->serial)))) g_fb_dread = 1;
     {   // Most draws sample no attachment of their pass: one look at the serials their fragment textures and images name (under one lock) settles it before the tile plan
         // and the per-binding work below, which only matter for a binding that names one (Breath of the Wild: about 1 draw in 15)
-        uint64_t rs[9]; int nr = 0; for (int k = 0; k < R.rt.n && k < 8; k++) if (R.rt.color[k]) rs[nr++] = R.rt.color[k]->serial;
+        // Texture IDs found to name no attachment are remembered (g_fbno) while the attachments' serials and the registrations stay the same, so most draws ask without the
+        // registry or its lock: a draw's textures are mostly those of the draws before it. The game's thread registers textures under that lock while this thread replays
+        uint64_t rs[9], sig = 0x9e3779b97f4a7c15ull; int nr = 0; for (int k = 0; k < R.rt.n && k < 8; k++) if (R.rt.color[k]) rs[nr++] = R.rt.color[k]->serial;
         if (R.rt.depth) rs[nr++] = R.rt.depth->serial;
-        int hit = 0;
-        os_unfair_lock_lock(&g_rmu);
-        for (int i = 0; i < fs->rf.nb && !hit; i++) { const nvn_rbind *b = &fs->rf.b[i];
+        for (int q = 0; q < nr; q++) sig = (sig ^ rs[q]) * 0xff51afd7ed558ccdull;
+        uint64_t rg = atomic_load_explicit(&g_reg_gen, memory_order_relaxed);
+        if (sig != g_fbno.sig || rg != g_fbno.reg) { g_fbno.sig = sig; g_fbno.reg = rg; if (!++g_fbno.gen) { memset(g_fbno.at, 0, sizeof g_fbno.at); g_fbno.gen = 1; } }
+        int hit = 0, ask = 0;
+        for (int i = 0; i < fs->rf.nb && !ask; i++) { const nvn_rbind *b = &fs->rf.b[i];
             int image = b->kind == NVN_RB_IMG && !b->rw && !b->atom && b->reg < 32;
             if (!image && (b->kind != NVN_RB_TEX || b->reg >= NTEX)) continue;
-            int tid = (int)((image ? S.img[1][b->reg] : tex_slot_h(S.tex[1], S.img[1], b->reg)) & 0xfffff); if (!tid || tid >= g_ntreg || !g_treg[tid].ok) continue;
-            uint64_t ser = g_treg[tid].t.serial; for (int q = 0; q < nr; q++) hit |= rs[q] == ser; }
-        os_unfair_lock_unlock(&g_rmu);
+            uint32_t tid = (uint32_t)((image ? S.img[1][b->reg] : tex_slot_h(S.tex[1], S.img[1], b->reg)) & 0xfffff);
+            ask = tid && (g_fbno.tid[tid & 255] != tid || g_fbno.at[tid & 255] != g_fbno.gen); }
+        if (ask) {
+            os_unfair_lock_lock(&g_rmu);
+            for (int i = 0; i < fs->rf.nb && !hit; i++) { const nvn_rbind *b = &fs->rf.b[i];
+                int image = b->kind == NVN_RB_IMG && !b->rw && !b->atom && b->reg < 32;
+                if (!image && (b->kind != NVN_RB_TEX || b->reg >= NTEX)) continue;
+                int tid = (int)((image ? S.img[1][b->reg] : tex_slot_h(S.tex[1], S.img[1], b->reg)) & 0xfffff); if (!tid) continue;
+                if (tid < g_ntreg && g_treg[tid].ok) { uint64_t ser = g_treg[tid].t.serial; for (int q = 0; q < nr; q++) hit |= rs[q] == ser; }
+                if (!hit) { g_fbno.tid[tid & 255] = (uint32_t)tid; g_fbno.at[tid & 255] = g_fbno.gen; } }
+            os_unfair_lock_unlock(&g_rmu);
+        }
         if (!hit) { g_fb_wmask |= wm; return; }
     }
     uint64_t tile[4]; int ntile = fb_tile_plan(pr, wm, tile);
