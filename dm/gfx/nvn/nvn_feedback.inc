@@ -9,9 +9,23 @@ static id<MTLComputePipelineState> g_tf_prepare;
 // one capture and an end per mesh, 73 to 182 a frame: each was a copy encoder, a compute encoder and a render pass behind full barriers, and on an iPad Pro M4 the GPU had
 // nothing to run for 17 of a frame's 34 ms (Scarlet) and 45 of 58 ms (Violet) between those encoders. DM_NVN_TF_CPU=0: every capture through tf_prepare in a pass of its own
 static uint32_t g_tf_cpu[8]; static int g_tf_known;
-static id<MTL4RenderCommandEncoder> g_tf_enc; static struct { uint64_t lo, hi; } g_tf_w[32]; static int g_tf_nw; static uint64_t g_tf_ncpu, g_tf_ngpu, g_tf_npass;
+static id<MTL4RenderCommandEncoder> g_tf_enc; static struct { uint64_t lo, hi; } g_tf_w[1024]; static int g_tf_nw; static uint64_t g_tf_ncpu, g_tf_ngpu, g_tf_npass;
+// The states an end or a pause saved into control buffers while the capture pass was open: copied when the pass ends, before anything that could read them (a draw that takes
+// its count from one, a resume, the end of the command buffer). Scarlet ends every capture with a control buffer, and a copy at each end closed the pass after one capture
+static struct { uint64_t ctl; uint32_t st[8]; } g_tf_save[256]; static int g_tf_nsave;
 static int tf_cpu_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TF_CPU"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("transform feedback: every capture through tf_prepare, in a pass of its own (DM_NVN_TF_CPU=0)"); } return v; }
-static void tf_pass_end(void) { if (!g_tf_enc) return; id<MTL4RenderCommandEncoder> e = g_tf_enc; g_tf_enc = nil; g_tf_nw = 0; enc_r_end(e); }   // before any other encoder of the command buffer, and its end
+static void tf_pass_end(void) {   // before any other encoder of the command buffer begins, and before the command buffer ends. Leaves no encoder open
+    if (!g_tf_enc) return;
+    id<MTL4RenderCommandEncoder> e = g_tf_enc; g_tf_enc = nil; g_tf_nw = 0; enc_r_end(e);
+    if (!g_tf_nsave) return;
+    int n = g_tf_nsave; g_tf_nsave = 0;
+    id<MTLBuffer> buf; size_t so = arena_alloc((size_t)n * 32, &buf);
+    for (int i = 0; i < n; i++) { void *buffer; uint64_t off, gpu;
+        memcpy((uint8_t *)buf.contents + so + (size_t)i * 32, g_tf_save[i].st, 32);
+        if (!mtl_gpu_addr(g_tf_save[i].ctl, 32, &buffer, &off, &gpu)) { RED_ONCE(103, "transform feedback control buffer is outside a memory pool"); continue; }
+        enc_b_copy_buffer(blit_buf(0,0,g_tf_save[i].ctl,g_tf_save[i].ctl+32), buf, so + (size_t)i * 32, (__bridge id<MTLBuffer>)buffer, off, 32); }
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+}
 void mtl_tf_stats(uint64_t v[3]) { v[0] = g_tf_ncpu; v[1] = g_tf_ngpu; v[2] = g_tf_npass; }
 static void tf_state_to_gpu(void) {   // the CPU's state into g_tf_state, in GPU order: what follows takes it from there
     if (!g_tf_known) return;
@@ -24,6 +38,11 @@ static void tf_state_gpu(const p_tf_state *b) {
     if (tf_cpu_on() && (b->what == 0 || !b->ctl)) {   // a begin, or an end / pause / resume that names no control buffer: nothing for the GPU
         if (b->what == 0) { memcpy(g_tf_cpu, initial, 32); g_tf_known = 1; }
         return; }
+    if (tf_cpu_on() && g_tf_known && g_tf_enc && b->what != 3) {   // an end or a pause with a control buffer while the capture pass is open: saved when the pass ends (g_tf_save)
+        if (g_tf_nsave == (int)(sizeof g_tf_save / sizeof *g_tf_save) || g_tf_nw == (int)(sizeof g_tf_w / sizeof *g_tf_w)) tf_pass_end();
+        else { g_tf_save[g_tf_nsave].ctl = b->ctl; memcpy(g_tf_save[g_tf_nsave].st, g_tf_cpu, 32); g_tf_nsave++;
+               g_tf_w[g_tf_nw].lo = b->ctl; g_tf_w[g_tf_nw].hi = b->ctl + 32; g_tf_nw++;   // a later capture of the pass that reads it ends the pass first (tf_joins)
+               pend_add(b->ctl,32,4); g_wr_epoch++; g_mdx_epoch++; return; } }
     rp_end(); ubd_land();
     if (b->what == 0) {
         id<MTLBuffer> buf; size_t off = arena_alloc(32, &buf);
@@ -100,11 +119,13 @@ static int tf_job_cpu(NvShader *vs, uint32_t count, uint32_t primitive, const p_
 // writes lies in a range a capture of that pass writes. Metal orders nothing between the draws of one pass for what their vertex functions write
 static int tf_joins(const nvn_tf_job *j) {
     if (g_tf_nw + 4 > (int)(sizeof g_tf_w / sizeof *g_tf_w)) return 0;
-    for (int k = 0; k < g_tf_nw; k++) { uint64_t lo = g_tf_w[k].lo, hi = g_tf_w[k].hi;
-        for (int s = 0; s < 16; s++) if (S.vbuf[s].address && S.vbuf[s].address < hi && lo < S.vbuf[s].address + S.vbuf[s].size) return 0;
-        for (int r = 0; r < 16; r++) { const p_bind_buf *u = &S.ubo[0][r], *t = &S.ssbo[0][r];
-            if ((u->addr && u->addr < hi && lo < u->addr + u->size) || (t->addr && t->addr < hi && lo < t->addr + t->size)) return 0; }
-        for (int b = 0; b < 4; b++) if (j->stride[b]) { uint64_t wl = S.tf[b].addr + j->offset[b], wh = wl + (uint64_t)j->args[0] * j->stride[b]; if (wl < hi && lo < wh) return 0; } }
+    struct { uint64_t lo, hi; } m[52]; int nm = 0;   // what this capture reads and writes
+    for (int s = 0; s < 16; s++) if (S.vbuf[s].address && S.vbuf[s].size) { m[nm].lo = S.vbuf[s].address; m[nm].hi = m[nm].lo + S.vbuf[s].size; nm++; }
+    for (int r = 0; r < 16; r++) { const p_bind_buf *u = &S.ubo[0][r], *t = &S.ssbo[0][r];
+        if (u->addr && u->size) { m[nm].lo = u->addr; m[nm].hi = u->addr + u->size; nm++; }
+        if (t->addr && t->size) { m[nm].lo = t->addr; m[nm].hi = t->addr + t->size; nm++; } }
+    for (int b = 0; b < 4; b++) if (j->stride[b] && j->args[0]) { m[nm].lo = S.tf[b].addr + j->offset[b]; m[nm].hi = m[nm].lo + (uint64_t)j->args[0] * j->stride[b]; nm++; }
+    for (int k = 0; k < g_tf_nw; k++) for (int i = 0; i < nm; i++) if (m[i].lo < g_tf_w[k].hi && g_tf_w[k].lo < m[i].hi) return 0;
     return 1;
 }
 static void tf_draw(NvProg *pr,const p_draw *dw,const p_draw_idx *di) {
