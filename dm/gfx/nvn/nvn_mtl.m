@@ -2276,6 +2276,16 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
     nvn_queue_gpu_progress();
 }
 static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
+// Whether the GPU still has a main command buffer to run. A commit's feedback is the late answer: on an iPad Pro M4 it came 0.5 to 0.7 ms after the command buffer's end (0.07 ms
+// on an M4 Max), and for that long sub_cut kept its segment and pass_split_try its long pass while the GPU had nothing to run. The queue signals g_seg_ev after every main
+// commit, and its value is read from memory (2.6 ns), so the answer is there when the GPU is. The feedback count still has to agree that something is out, so a lost device,
+// whose events never come, reads as idle. DM_NVN_SEG_EVENT=0: the feedback count alone, as before
+static id<MTLSharedEvent> g_seg_ev; static uint64_t g_seg_sig;
+static void seg_committed(void);
+static inline int seg_running(void) {
+    if (atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) <= 0) return 0;
+    return !g_seg_ev || g_seg_ev.signaledValue < g_seg_sig;
+}
 static void rt_preserve_bound(void);
 static void queue_program_preserve(void);
 uint64_t mtl_sub_commit(void) {
@@ -2326,7 +2336,7 @@ uint64_t mtl_sub_commit(void) {
     if (g_gp_state == 1 && !gp_active()) { int gn = g_gp_n; gp_lab *gl = malloc(sizeof(gp_lab) * (gn ? gn : 1)); memcpy(gl, g_gp_lab, sizeof(gp_lab) * gn); uint64_t gf = g_gp_frame; g_gp_state = 2; atomic_store(&g_gp_busy, 1);
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; gp_report(gn, gl, gf); }]; }
     [g_cb endCommandBuffer];
-    rec_commit(g_cb, o);
+    rec_commit(g_cb, o); seg_committed();
     if (!lost_test) rec_signal(g_ev, fence);
     rec_drain();
     g_alloc_fence[g_alloc_cur] = fence;
@@ -14930,6 +14940,10 @@ static _Atomic int g_seg_inflight;   // segments committed and not yet done on t
 // The count starts with the submission (mtl_sub_begin). It used to start at the submission's first sub_cut, which only a render target change reaches (OP_SET_RT): the draws a
 // submission makes into the target it inherited, before its first target change, were never counted, and the first segment came that many draws late
 static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
+static void seg_committed(void) {   // after a main command buffer's commit is recorded: the queue signals when the GPU has run it
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_SEG_EVENT"); on = !(e && !strcmp(e, "0")); if (on) g_seg_ev = [g_dev newSharedEvent]; }
+    if (g_seg_ev) rec_signal(g_seg_ev, ++g_seg_sig);
+}
 // DM_FSTEP_PROBE_RAMP=1 (default) / 0 / ab: a frame-step probe's grace is renewed while its frames keep getting cheaper (nvn_fstep.h FSTEP_RAMP), the time macOS's GPU clock takes to rise for the shorter deadline
 static int probe_ramp_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_FSTEP_PROBE_RAMP", 1); return m; }
 int mtl_probe_ramp_on(void) { return sw_on(probe_ramp_mode()); }
@@ -14940,7 +14954,7 @@ static void sub_cut(void) {
     // The cut is there so that the GPU does not sit idle while the host encodes. With earlier work still running a commit gains nothing and queues one more command buffer: each is a call into the kernel on Metal's one submission queue, and with buffers queued behind running work
     // the GPU waited 5-40 ms with the next one already committed (docs/reference/frame-rate.md). So it stays a boundary for the game's timestamps (ts_boundary), with the commit left for when the GPU has run out. A copy still commits, as its data must land. DM_NVN_CUT_BUSY=0: every cut commits
     static int busy = -1; if (busy < 0) { const char *e = getenv("DM_NVN_CUT_BUSY"); busy = !e || atoi(e) != 0; }
-    if (busy && !g_cut_copy && (!seg_ts() || ts_on()) && atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) > 0) {
+    if (busy && !g_cut_copy && (!seg_ts() || ts_on()) && seg_running()) {
         if (ts_on()) { ts_boundary(); g_seg++; }
         g_cut_draw0 = g_stat_draw; return; }
     if (ts_on()) ts_boundary();
@@ -14965,7 +14979,7 @@ static void sub_cut(void) {
     gmem_commit_patch();
     res_commit();
     [g_cb endCommandBuffer];
-    rec_commit(g_cb, o);
+    rec_commit(g_cb, o); seg_committed();
     if (rec_on()) rec_publish();   // the segment reaches the encode thread now, not when its block of records fills
     g_cb = rec_cb_new();
     [g_cb beginCommandBufferWithAllocator:g_alloc4[g_alloc_cur]];   // one allocator encodes several command buffers in sequence; it is reset only once its fence (the last segment) has passed, when a later submission starts
@@ -14982,7 +14996,7 @@ static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e 
 static void pass_split_try(void) {
     int n = pass_split_draws();
     if (n <= 0 || !g_enc || !g_cb || g_stat_draw - g_cut_draw0 < (uint64_t)n) return;
-    if (atomic_load_explicit(&g_seg_inflight, memory_order_relaxed)) { g_split_blocked += g_stat_draw - g_cut_draw0 == (uint64_t)n; return; }   // counted once per pass part
+    if (seg_running()) { g_split_blocked += g_stat_draw - g_cut_draw0 == (uint64_t)n; return; }   // counted once per pass part
     if (g_rt_merged || g_rt_range_active || g_rt_range_pending || g_sm_pass || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_defer_replaying || g_lp.count) return;
     if (g_split_pass != g_setrt_n) { g_split_pass = g_setrt_n; g_split_n = 0; }
     if (pass_split_max() > 0 && g_split_n >= pass_split_max()) return;
