@@ -65,7 +65,8 @@ typedef struct {
     // Further stubs the build's rewriter table names (patch_nso.py FS_KEYS; 0 = none): a variable frame step (VAR_STEP), the render buffer pool a render scale above 1.0 grows
     // (RENDER_POOL, bytes), the docked 3D views' base size and the output size its stubs replace (VIEW_W / VIEW_H, OUTPUT_W / OUTPUT_H)
     uint64_t var_step, render_pool, view_w, view_h, out_w, out_h;
-    unsigned camera_aspect;   // CAMERA_ASPECT fixups capability: state +0x40 desired, +0x44 camera-writer acknowledgement
+    unsigned camera_aspect;   // CAMERA_ASPECT fixups capability: state +0x320 desired, +0x324 camera-writer acknowledgement
+    uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none
@@ -209,6 +210,7 @@ const char *dm_cheats_source(int i);
 void dm_cheats_exit(void);            // a clean exit (hle_lifecycle.c, atexit): removes the safe-mode flag
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
 void dm_gfx_suspend(int on);
+void dm_gfx_quit(int wait_ms);   // hle_nvn.c: the process is ending (the graceful exit): what the pipeline archive has not written yet, written, waiting up to wait_ms
 void dm_gfx_enter(void); void dm_gfx_leave(void);   // hle_nvn.c: the gate dm_gfx_suspend closes, for graphics layers other than NVN (dm/gfx/vk)
 void dm_gfx_shot_at(long k, const char *path);
 void dm_shot_written(const char *path, int ok);   // The graphics side finished writing a screenshot to disk (diag.c: DM_TICK_HOLD=E:SHOT unfreezes on this)

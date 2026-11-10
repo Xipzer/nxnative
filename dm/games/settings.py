@@ -51,9 +51,9 @@ def rows():
         yield n, c + [''] * (9 - len(c))
 
 
-def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
-    if not path.is_file(): return set()
-    return {m[1] for m in re.finditer(r'^# (\w+)\t', path.read_text(encoding='utf-8'), re.M)}
+def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table, as {KEY: value}
+    if not path.is_file(): return {}
+    return {m[1]: m[2].strip() for m in re.finditer(r'^# (\w+)\t(.*)$', path.read_text(encoding='utf-8'), re.M)}
 
 
 UNKNOWN_LANGUAGES = 'This game\'s files do not list its languages, so some of these may not be in the game. It may then show another one.'
@@ -124,9 +124,14 @@ def build(gid, patched, control):
         elif kind == 'range':
             # A bound may be DM_GAME_<NAME>, so a slider stops where the game stops (DM_RENDER_SCALE at the profile's render_scale_max)
             lo, hi, st = (float((macro(x, n) if x.startswith('DM_GAME_') else x).rstrip('f')) for x in values.split(':'))
-            # A build whose stubs grow the render buffer pool is no longer held by the pool the game made, so the
-            # slider goes to the host's own ceiling and the loader refuses what this platform cannot reserve
-            if var == 'DM_RENDER_SCALE' and 'RENDER_POOL' in keys: hi = 3.0
+            if var == 'DM_RENDER_SCALE':   # the ceilings loader.c dm_fps_state_apply holds it to
+                # A build whose stubs grow the render buffer pool is no longer held by the pool the game made, so the
+                # slider goes to the host's own ceiling and the loader refuses what this platform cannot reserve
+                if 'RENDER_POOL' in keys: hi = 3.0
+                # A stub that also raises the size names its largest scale (the rewriter's RENDER_SCALE, hex as every header value; 1 = it only lowers the size and
+                # leaves the ceiling to the lines above): up to it, or to the smaller of it and a ceiling above 1.0 that the profile or the pool gives
+                stub = float(int(keys.get('RENDER_SCALE', '1'), 16))
+                if stub > 1: hi = min(hi, stub) if hi > 1.0 else stub
             if hi <= lo: continue   # nothing to choose: the game's own value is the only one
             s.update(min=lo, max=hi, step=st)
         elif kind == 'toggle':

@@ -20,6 +20,7 @@ void dm_host_shutdown_then(const char *why, void (*then)(void *), void *arg) {
 #ifdef DM_PROFILE_GEN   // a profiling build (-fprofile-instr-generate -DDM_PROFILE_GEN): _exit skips the profile's atexit writer
     { int __llvm_profile_write_file(void); __llvm_profile_write_file(); }
 #endif   // a profiling build (-fprofile-instr-generate): _exit skips the profile's atexit writer
+    { int64_t left = 1300 - (int64_t)((now_ns() - t0) / 1000000); dm_gfx_quit(left > 0 ? (int)left : 0); }   // the pipeline archive's unwritten captures, within the 1.5 s
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
     if (then) then(arg);
     _exit(0);

@@ -167,6 +167,22 @@ class LauncherSettingsTests(unittest.TestCase):
                 profile = type('Profile', (), {'id': BOTW, 'get': lambda self, key, default='', bad=bad: bad})()
                 with self.assertRaises(SystemExit): settings.render_base(profile)
 
+    def test_render_scale_reaches_the_stubs_largest_scale(self):
+        """The rewriter writes a render-scale stub's largest scale as RENDER_SCALE: 3 raises the slider's top (Hades II, whose profile sets no render_scale_max); 1 is a stub that
+        only lowers the size, which leaves the top to the profile's render_scale_max (1.0 by default; Breath of the Wild's is above it), or to the host's ceiling on a build whose
+        stubs grow the render buffer pool (RENDER_POOL). Where the stub and the profile or the pool both name a ceiling, the smaller holds, as in loader.c dm_fps_state_apply"""
+        HADES2 = '0100A00019DE0000'
+        botw_max = float(settings.game.load(BOTW).get('render_scale_max', '1.0'))
+        self.assertGreater(botw_max, 1.0); self.assertLess(botw_max, 3.0)
+        for gid, table, top in ((HADES2, '# RENDER_SCALE\t1\n', 1.0), (HADES2, '# RENDER_SCALE\t3\n', 3.0),
+                                (BOTW, '# RENDER_SCALE\t1\n', botw_max), (BOTW, '# RENDER_SCALE\t3\n', botw_max),
+                                (BOTW, '# RENDER_SCALE\t1\n# RENDER_POOL\t0x7300000\n', 3.0), (BOTW, '# RENDER_SCALE\t2\n# RENDER_POOL\t0x7300000\n', 2.0)):
+            with self.subTest(gid=gid, table=table), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': 'nvn'}):
+                (Path(tmp) / 'main.fixups.tsv').write_text(table)
+                row = {s['env']: s for s in settings.build(gid, tmp, Path(tmp) / 'control.nacp')['settings']}['DM_RENDER_SCALE']
+            self.assertEqual((row['min'], row['max']), (0.5, top))
+
     def test_table_format_is_strict(self):
         good = 'DM_X\ttoggle\t-\t0\talways\tGame\tX\n'
         for bad, why in [('DM_X\ttoggle\t-\t0\talways\tGame\tX\t\tlevel=basic\textra\n', 'columns'),

@@ -30,13 +30,18 @@ ORIGINAL = {
 }
 
 
+# Where 1.4.3 has the six functions the frame step is matched by (patches.py MATCH_FRAME_STEP): the camera sites ride on that stub, for this build alone
+MATCHED = {'base': 0x2db174, 'others': {'game step reader 1': 0x2daa20, 'game step reader 2': 0x3e55e0, 'menu fade': 0x1fbb50, 'swapchain argument': 0xbe1304, 'view render size': 0xd5c24}}
+
+
 class Context:
     state, render_scale = 0x3100000, 0
 
-    def __init__(self, originals=None):
+    def __init__(self, originals=None, build=BUILD):
         self.cursor = 0x3000000
         self.originals = ORIGINAL if originals is None else originals
         self.checked, self.code, self.writes = {}, {}, {}
+        self.base, self.others, self.build, self.capabilities, self.keys = MATCHED['base'], dict(MATCHED['others']), build, set(), {}
 
     def here(self): return self.cursor
 
@@ -56,14 +61,31 @@ class Context:
 class BuildGate(unittest.TestCase):
     def test_registry_advertises_only_verified_camera_build(self):
         self.assertEqual(patch.CAPABILITIES, {BUILD: ('CAMERA_ASPECT',)})
-        self.assertEqual(set(patch.FRAME_STEP), {BUILD})
+        self.assertFalse(getattr(patch, 'FRAME_STEP', {}))   # the frame step is placed by its functions (MATCH_FRAME_STEP), on this build too
+        rule, = patch.MATCH_FRAME_STEP['main']
+        self.assertIs(rule['stub'], patch.matched_frame_step); self.assertEqual(set(rule['others']), set(MATCHED['others']))
         ctx = Context()
-        patch.FRAME_STEP[BUILD](ctx)
+        patch.matched_frame_step(ctx)
         for site, original in ORIGINAL.items():
             self.assertEqual(ctx.checked[site], original)
             self.assertEqual(len(ctx.writes[site]) * 4, len(original))
             self.assertEqual(ctx.writes[site][0] & 0xfc000000, 0x14000000)
             self.assertTrue(all(word == 0xd503201f for word in ctx.writes[site][1:]))
+        timing = set(ctx.writes) - set(ORIGINAL)
+        self.assertEqual(len(timing), 9)   # the matched stub's own sites: the step, two readers with their scvtf, the fade, the swapchain argument, two in the view size
+
+    def test_camera_sites_are_this_builds_alone(self):
+        """The camera sites are fixed addresses of 1.4.3: the matched stub writes them on that build only, and its timing sites on any"""
+        for build in ('0' * 32, None):
+            with self.subTest(build=build):
+                ctx = Context(build=build)
+                if build is None: del ctx.build   # a dry run that names no build (test_patches.py)
+                patch.matched_frame_step(ctx)
+                self.assertFalse(set(ctx.writes) & set(ORIGINAL)); self.assertFalse(set(ctx.checked) & set(ORIGINAL))
+                self.assertEqual(len(ctx.writes), 9)
+        ctx = Context(); ctx.others['menu fade'] = None   # one of the six not found: no timing stub, and the capability's camera sites all the same
+        patch.matched_frame_step(ctx)
+        self.assertEqual(set(ctx.writes), set(ORIGINAL))
 
     def test_each_original_word_mismatch_rejected_before_camera_writes(self):
         for site, original in ORIGINAL.items():
@@ -89,8 +111,8 @@ class ProjectionWriters(unittest.TestCase):
         self.u.mem_map(self.obj, 0x4000)
         self.u.mem_map(self.stack, 0x4000)
         self.ctx = Context()
-        # Exercise the production registry entry, including its timing/scale hooks.
-        patch.FRAME_STEP[BUILD](self.ctx)
+        # Exercise the production stub, including its timing/scale hooks.
+        patch.matched_frame_step(self.ctx)
         for offset, word in self.ctx.code.items():
             self.u.mem_write(self.base + offset, struct.pack('<I', word))
         for offset, words in self.ctx.writes.items():

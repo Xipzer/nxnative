@@ -14,7 +14,7 @@ int nvn_mm_on(void);
 int nvn_mm_translate(NSString *key, const uint8_t *code, uint32_t ncode, uint32_t c1_off, const uint32_t local[3], int early_z, char *why, size_t nwhy);
 // The stage of key's translation (kept from this run or an earlier one with the same maxmetal and chain), or -1
 int nvn_mm_stage(NSString *key);
-// <key>_b's reflection and library (pc: the library name, <key>_b), nil when key has no translation. layer: the MSL writes render_target_array_index (as lib_from_file's t_lib_layer)
+// <key>_b's reflection and library (pc: the library name, <key>_b), nil when key has no translation. layer: the MSL writes render_target_array_index (shader_load's layer_out for it: this reflection has no layer_out of its own)
 NSDictionary *nvn_mm_json(NSString *pc);
 id<MTLLibrary> nvn_mm_library(id<MTLDevice> dev, NSString *pc, int *layer, NSError **err);
 // Translations and library compiles this run, and their time

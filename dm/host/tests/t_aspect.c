@@ -124,7 +124,31 @@ static void concurrency(void) {
     assert(!pthread_join(writer, NULL)); assert(!pthread_join(guest, NULL));
     acknowledge(); assert(dm_game_aspect() == desired());
 }
+// What holds DM_RENDER_SCALE (dm_fps_state_apply): the stub's largest scale where it names one above 1 (RENDER_SCALE n), the profile's render_scale_max, and on a build whose
+// stubs grow the render buffer pool (RENDER_POOL) what the platform can reserve; the smaller where two apply
+static float scale_for(const char *asked, uint32_t stub, uint64_t pool) {
+    reset(); g_render_scale_max = 1.0f; dm_mem_extra = 0;
+    module.render_scale_max = stub; module.render_pool = pool;
+    install_fps_state(&module); setenv("DM_RENDER_SCALE", asked, 1); dm_fps_state_apply(); unsetenv("DM_RENDER_SCALE");
+    float sc; memcpy(&sc, image + 0x8010, sizeof sc); return sc;
+}
+static void render_scale_ceilings(void) {
+    const float profile = DM_GAME_RENDER_SCALE_MAX;   // 1.0 unless the profile measured its pools
+    char top[16]; snprintf(top, sizeof top, "%.2f", (double)profile);
+    assert(scale_for("0.75", 1, 0) == 0.75f && scale_for("0.4", 1, 0) == 1.0f);
+    assert(scale_for(top, 1, 0) == strtof(top, NULL) && scale_for("3.0", 1, 0) == (profile >= 3.0f ? 3.0f : 1.0f));   // a stub that only lowers the size: the profile's ceiling
+    assert(scale_for("3.0", 3, 0) == (profile > 1.0f && profile < 3.0f ? 1.0f : 3.0f));   // a stub that takes 3 (Hades II): 3, or the profile's where it names a smaller one
+    assert(scale_for("2.0", 3, 0) == (profile > 1.0f && profile < 2.0f ? 1.0f : 2.0f));
+    assert(scale_for("3.5", 3, 0) == 1.0f);
+    float pool = render_pool_max(0x7300000);   // 3.0 on the Mac
+    if (pool >= 2.0f) {
+        assert(scale_for("2.0", 1, 0x7300000) == 2.0f && dm_mem_extra);   // the pool grows: the platform's ceiling, whatever the profile's
+        assert(scale_for("2.0", 2, 0x7300000) == 2.0f && scale_for("2.5", 2, 0x7300000) == 1.0f && !dm_mem_extra);   // and the stub's where it names a smaller one
+    }
+    g_render_scale_max = 1.0f; dm_mem_extra = 0;
+}
 int main(void) {
+    render_scale_ceilings();
     preload_ordering(); unsupported(); layout(); concurrency();
     verified = "277178b7dba1b6d4949a84778d4abc58";
     preload_ordering(); unsupported(); layout(); concurrency();

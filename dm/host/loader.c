@@ -273,6 +273,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "VIEW_H")) m->view_h = v;
         else if (!strcmp(key, "OUTPUT_W")) m->out_w = v;
         else if (!strcmp(key, "OUTPUT_H")) m->out_h = v;
+        else if (!strcmp(key, "RENDER_SCALE")) m->render_scale_max = (uint32_t)v;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -317,6 +318,7 @@ int dm_fps_var_cap;   // a variable frame step capped at this frame rate (VAR_ST
 uint64_t dm_mem_extra;   // bytes a render scale above 1.0 adds to the application pool and the alias region for the game's larger render buffer pool (hle_svc.c)
 static const char *g_fps_mod;   // the module holding the state page (for the log)
 static const module_t *g_fps_m;
+static float g_render_scale_max = 1.0f;   // the render-scale stub's largest scale (RENDER_SCALE in its fixups table; 1 for a stub that only lowers the game's size)
 // Drawable notifications may arrive before preload, and preload precedes launcher
 // environment settings on iOS. Keep the shape independently, but do not enable the
 // hook until dm_fps_state_apply runs immediately before the guest starts.
@@ -351,7 +353,7 @@ float dm_game_aspect(void) {
 }
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x328 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
-    dm_fps_state = m->base + m->fps_state_off; g_fps_m = m;
+    dm_fps_state = m->base + m->fps_state_off; g_fps_m = m; g_fps_mod = m->name;
     if (m->camera_aspect && !strcmp(m->name, "main") &&
         (!strcmp(m->build_id, "cd57b23fa4bbad65803d9788c01821ee") ||
          !strcmp(m->build_id, "277178b7dba1b6d4949a84778d4abc58"))) {
@@ -360,6 +362,7 @@ static void install_fps_state(module_t *m) {
         aspect_publish_locked();
         pthread_mutex_unlock(&g_aspect_mu);
     }
+    if (m->render_scale_max > 1) g_render_scale_max = (float)m->render_scale_max;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs. The fields beyond +0x40 are written only for a build whose rewriter table names their stubs
@@ -393,7 +396,7 @@ void dm_fps_state_apply(void) {
       if (want && t != want) { LOG("%s: frame rate %d for frame generation (DM_MFX_INTERP=%s), in place of %d", name, want, mi, t); t = want; } }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     dm_fps_var_cap = t > 60 ? t : 0;
-// Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
+    // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880, Hades II's render size): 1.0 keeps the game's own size and dynamic resolution;
     // another factor fixes the size at that multiple (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too. Above 1.0 (up to 3.0) only on a build whose
     // stubs grow its render buffer pool (RENDER_POOL), and only on the Mac: the pool's growth comes on top of the guest's address space, which iOS caps at a 6 GB reservation (hle_svc.c)
     // The ceiling is what the platform can reserve, not which platform it is. The pool's growth comes on top of the
@@ -406,12 +409,16 @@ void dm_fps_state_apply(void) {
     //     since the growth comes on top of the guest's address space (render_pool_max above);
     //   they do not: the pool stays the size the game made it, so the limit is how far the game's own pool
     //     stretches, which is the profile's render_scale_max, found with DM_NVN_POOLPEAK.
-    const float hi = m->render_pool ? render_pool_max(m->render_pool) : (float)DM_GAME_RENDER_SCALE_MAX;
+    // A third comes from the stub itself: one that also raises the game's size names its largest scale (RENDER_SCALE n above 1 in the fixups table, g_render_scale_max: Hades II's
+    // 3.0), where 1 is a stub that by itself only lowers the size and leaves the ceiling to the two above. Where the stub names one, it holds DM_RENDER_SCALE too: the smaller of
+    // it and the platform's reservation, or of it and a render_scale_max the profile sets (1.0 there is the default, no measured ceiling, and leaves the stub's own)
+    float hi = m->render_pool ? render_pool_max(m->render_pool) : (float)DM_GAME_RENDER_SCALE_MAX;
+    if (g_render_scale_max > 1.0f) hi = m->render_pool || hi > 1.0f ? fminf(hi, g_render_scale_max) : g_render_scale_max;
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
     if (rs) {
         char *end; sc = strtof(rs, &end);
         if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.2f%s; keeping the game's size", rs, hi,
-            hi > 1.0f ? "" : " (above 1.0 needs either a build whose stubs grow its render buffer pool, or a profile render_scale_max)"); sc = 1.0f; }
+            hi > 1.0f ? "" : " (above 1.0 needs a build whose stubs grow its render buffer pool or raise the game's size, or a profile render_scale_max)"); sc = 1.0f; }
         else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", name, sc);
     }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);

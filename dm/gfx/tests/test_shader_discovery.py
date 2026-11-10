@@ -23,7 +23,7 @@ class Discovery(unittest.TestCase):
             main_started.set()
             if not loose_done.wait(5): raise TimeoutError('main scan blocked later work')
             return [('main', 'first'), ('main-update', 'second')]
-        def archives(_):
+        def archives(_, mains=()):   # scan_inputs hands it the mains too (archive_jobs: the Unreal legacy paks' keys)
             if not main_started.wait(5): raise TimeoutError('main and archive discovery did not overlap')
             return ['archive'], ['loose']
         def scan(job):
