@@ -128,6 +128,13 @@ static int tf_joins(const nvn_tf_job *j) {
     for (int k = 0; k < g_tf_nw; k++) for (int i = 0; i < nm; i++) if (m[i].lo < g_tf_w[k].hi && g_tf_w[k].lo < m[i].hi) return 0;
     return 1;
 }
+// An inline update made while the capture pass is open is deferred (mtl_sub_update) and lands after the pass. A capture that reads one (ubd_conflict: a vertex stream, a
+// storage buffer, a uniform binding the shadows cannot give) or writes over one does not join: the pass ends and the updates land before it, as before every tf_prepare
+static int tf_update_waits(NvProg *pr, const p_draw *dw, const nvn_tf_job *j) {
+    if (!g_nubd) return 0;
+    for (int b = 0; b < 4; b++) if (j->stride[b] && j->args[0]) { uint64_t lo = S.tf[b].addr + j->offset[b]; if (ubd_hits(lo, lo + (uint64_t)j->args[0] * j->stride[b])) return 1; }
+    return ubd_conflict(pr, dw, NULL);
+}
 static void tf_draw(NvProg *pr,const p_draw *dw,const p_draw_idx *di) {
     NvShader *vs=pr?pr->sh[0]:nil;
     if(!dw||dw->ind||dw->mdi_cnt||!(dw->prim==0||dw->prim==1||dw->prim==4)) {
@@ -140,7 +147,7 @@ static void tf_draw(NvProg *pr,const p_draw *dw,const p_draw_idx *di) {
     uint64_t dst[4]={0},wl[4]={0},wh[4]={0};uint64_t job=0;int cpu=tf_cpu_on()&&g_tf_known&&g_tf_state,nw=0;
     if(cpu) {
         nvn_tf_job j;if(!tf_job_cpu(vs,(uint32_t)count,primitive,dw,&j,dst))return;
-        if(g_tf_enc&&!tf_joins(&j))tf_pass_end();
+        if(g_tf_enc&&(!tf_joins(&j)||tf_update_waits(pr,dw,&j)))tf_pass_end();
         id<MTLBuffer> buf;size_t off=arena_alloc(sizeof j,&buf);memcpy((uint8_t *)buf.contents+off,&j,sizeof j);job=buf.gpuAddress+off;
         for(int b=0;b<4;b++)if(j.stride[b]&&j.args[0]){wl[nw]=S.tf[b].addr+j.offset[b];wh[nw]=wl[nw]+(uint64_t)j.args[0]*j.stride[b];nw++;}
         g_tf_ncpu++;

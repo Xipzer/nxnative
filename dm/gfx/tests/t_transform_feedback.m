@@ -120,5 +120,22 @@ int main(int argc,char **argv) { @autoreleasepool {
     mtl_sub_begin();bind(o1,100);state(0,NULL);dw.first=2;dw.count=3;tf_draw(pr,&dw,NULL);dw.first=7;dw.count=4;tf_draw(pr,&dw,NULL);state(1,ctl3);finish();
     CHECK(ctl3[0]==100&&ctl3[4]==5&&ctl3[5]==1,"an end with a control buffer saves the state the CPU kept: offsets, the count clipped to the buffer");
     record(o1+15,7);record(o1+20,8);
+    // An inline update made while the capture pass is open is deferred: a capture that reads it or writes over it starts another pass, after the update has landed
+    uint8_t *upd=(uint8_t *)memory+12288,bytes[64];memset(bytes,0x5a,sizeof bytes);memset(upd,0,64);
+    mtl_sub_begin();mtl_tf_stats(t0);dw.count=3;
+    bind(o1,60);state(0,NULL);dw.first=70;tf_draw(pr,&dw,NULL);state(1,NULL);
+    mtl_sub_update(bytes,(uint64_t)upd,64);
+    bind(o2,60);state(0,NULL);dw.first=80;tf_draw(pr,&dw,NULL);state(1,NULL);
+    mtl_tf_stats(t1);CHECK(on?t1[2]-t0[2]==1&&g_nubd==1:t1[2]-t0[2]==2,"an inline update that no capture reads leaves the capture pass open");
+    S.vbuf[0].address=(uint64_t)upd;S.vbuf[0].size=64;   // a vertex stream the update wrote
+    bind(o3,60);state(0,NULL);dw.first=90;tf_draw(pr,&dw,NULL);state(1,NULL);
+    mtl_tf_stats(t2);CHECK(t2[2]-t1[2]==1&&!g_nubd,"a capture that reads an inline update deferred in the open pass starts another pass, after the update");
+    S.vbuf[0].address=0;S.vbuf[0].size=0;
+    mtl_sub_update(bytes,(uint64_t)o4,60);
+    bind(o4,60);state(0,NULL);dw.first=100;tf_draw(pr,&dw,NULL);state(1,NULL);
+    mtl_tf_stats(t3);CHECK(t3[2]-t2[2]==1,"a capture into a range an inline update deferred in the open pass wrote starts another pass");
+    finish();
+    for(unsigned i=0;i<3;i++){record(o1+5*i,i+70);record(o2+5*i,i+80);record(o3+5*i,i+90);record(o4+5*i,i+100);}
+    CHECK(upd[0]==0x5a&&upd[63]==0x5a,"the inline update landed");
     printf("feedback: %d checks, %d failed\n",checks,fails);return fails!=0;
 } }
