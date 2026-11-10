@@ -2174,7 +2174,20 @@ static void gpu_tag_begin(uint64_t f) {
     if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
     atomic_fetch_add(&g_gpu[k].pending, 1);
 }
+// How the GPU is fed (the timing lines' "GPU feed"): the time it had nothing to run between one command buffer's end and the next one's start, the time it ran, and how long after a
+// command buffer's end its completion is reported here (sub_cut and pass_split_try act on those reports)
+static _Atomic uint64_t g_gf_idle_ns, g_gf_busy_ns, g_gf_lat_ns, g_gf_lat_max, g_gf_n, g_gf_last_end; static uint64_t g_split_blocked;
+static void gf_note(double g0, double g1) {   // a command buffer's GPU start and end (the main ones through gpu_tag_done, and the present's)
+    if (g1 > g0 && g0 > 0) {
+        uint64_t s0 = (uint64_t)(g0 * 1e9), s1 = (uint64_t)(g1 * 1e9), le = atomic_load(&g_gf_last_end), lat = (uint64_t)((CACurrentMediaTime() - g1) * 1e9);
+        if (le && s0 > le && s0 - le < 100000000ull) atomic_fetch_add(&g_gf_idle_ns, s0 - le);
+        atomic_fetch_add(&g_gf_busy_ns, s1 - (s0 > le ? s0 : le < s1 ? le : s1));
+        for (; s1 > le && !atomic_compare_exchange_weak(&g_gf_last_end, &le, s1);) {}
+        if (lat < 1000000000ull) { atomic_fetch_add(&g_gf_lat_ns, lat); atomic_fetch_add(&g_gf_n, 1); uint64_t m = atomic_load(&g_gf_lat_max); while (lat > m && !atomic_compare_exchange_weak(&g_gf_lat_max, &m, lat)) {} }
+    }
+}
 static void gpu_tag_done(uint64_t f, double g0, double g1) {
+    gf_note(g0, g1);
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
     double d = g1 - g0;
@@ -14954,7 +14967,8 @@ static int pass_split_draws(void) { static int v = -1; if (v < 0) { const char *
 static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_PASS_SPLIT_MAX"); v = e ? atoi(e) : 2; } return v; }   // per NVN pass: each split stores and loads its attachments
 static void pass_split_try(void) {
     int n = pass_split_draws();
-    if (n <= 0 || !g_enc || !g_cb || g_stat_draw - g_cut_draw0 < (uint64_t)n || atomic_load_explicit(&g_seg_inflight, memory_order_relaxed)) return;
+    if (n <= 0 || !g_enc || !g_cb || g_stat_draw - g_cut_draw0 < (uint64_t)n) return;
+    if (atomic_load_explicit(&g_seg_inflight, memory_order_relaxed)) { g_split_blocked += g_stat_draw - g_cut_draw0 == (uint64_t)n; return; }   // counted once per pass part
     if (g_rt_merged || g_rt_range_active || g_rt_range_pending || g_sm_pass || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_defer_replaying || g_lp.count) return;
     if (g_split_pass != g_setrt_n) { g_split_pass = g_setrt_n; g_split_n = 0; }
     if (pass_split_max() > 0 && g_split_n >= pass_split_max()) return;
@@ -14963,6 +14977,9 @@ static void pass_split_try(void) {
     if (!g_pass_splits++) MLOG("pass split: a long render pass was ended and its segment committed while the GPU had nothing to do (DM_NVN_PASS_SPLIT=%d, frame %llu pass %llu)", n, (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass);
 }
 uint64_t mtl_pass_splits(void) { return g_pass_splits; }
+void mtl_gpu_feed_stats(uint64_t v[7]) {   // idle ns, busy ns, report delay ns (sum, count, largest since the last call), pass splits, pass parts of DM_NVN_PASS_SPLIT draws met with a segment in flight
+    v[0] = atomic_load(&g_gf_idle_ns); v[1] = atomic_load(&g_gf_busy_ns); v[2] = atomic_load(&g_gf_lat_ns); v[3] = atomic_load(&g_gf_n); v[4] = atomic_exchange(&g_gf_lat_max, 0); v[5] = g_pass_splits; v[6] = g_split_blocked;
+}
 uint64_t mtl_cut_count(void) { return g_cuts; }
 uint64_t mtl_copy_cut_count(void) { return g_copy_cuts; }
 
@@ -16199,7 +16216,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) { MLOG("[RED] display command buffer error: %s", f.error.description.UTF8String); gpu_lost_check(f.error, "display"); }
         pthread_mutex_lock(&g_pq_mu); if (interp < 0 && ticket > g_pq_done) g_pq_done = ticket; if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
-        present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); pthread_mutex_unlock(&g_pq_mu);
+        present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); gf_note(f.GPUStartTime, f.GPUEndTime); pthread_mutex_unlock(&g_pq_mu);
     }];
     id<MTL4CommandBuffer> buffers[] = {cb};
     pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);

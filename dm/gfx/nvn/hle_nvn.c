@@ -1768,6 +1768,10 @@ static void power_line(uint64_t frame) {
         double nf = frame > pf ? (double)(frame - pf) : 1;   // per frame: the fair comparison when one build holds the frame rate better than another
         LOG("[nvn] power up to frame %llu: CPU energy %.2f W, %.1f mJ per frame (%.1f fps); CPU %.0f%% (100 = one core), %.0f%% of it on performance cores; wakeups %.0f/s (out of platform idle %.0f); GPU %.1f ms/s; thermal %d; top yielders: %s", frame,
             (e - pe) / 1e9 / s, (e - pe) / 1e6 / nf, nf / s, (cpu - pcpu) / 1e7 / s, cpu > pcpu ? 100.0 * (double)(p - pp) / (double)(cpu - pcpu) : 0, (iw - piw) / s, (idw - ppw) / s, (g - pg) / 1e6 / s, dm_thermal_now(), yt);
+        { void mtl_gpu_feed_stats(uint64_t v[7]); static uint64_t pv[7]; uint64_t v[7]; mtl_gpu_feed_stats(v); double nfr = nf; uint64_t dn = v[3] - pv[3];
+          LOG("[nvn] GPU feed up to frame %llu: per frame the GPU ran %.2f ms and had nothing to run for %.2f ms between command buffers; a command buffer's end is reported %.2f ms later (largest %.2f ms, %llu reports); long passes split %llu, not split with a segment still running %llu",
+              frame, (v[1] - pv[1]) / 1e6 / nfr, (v[0] - pv[0]) / 1e6 / nfr, dn ? (v[2] - pv[2]) / 1e6 / dn : 0.0, v[4] / 1e6, (unsigned long long)dn, (unsigned long long)(v[5] - pv[5]), (unsigned long long)(v[6] - pv[6]));
+          memcpy(pv, v, sizeof pv); }
         char rs[400]; mtl_res_stats(rs, sizeof rs); static uint64_t pbs, pbf, pba; uint64_t bs, bf, ba; mtl_barrier_stats(&bs, &bf, &ba);
         uint64_t mtl_cut_count(void), mtl_copy_cut_count(void), mtl_blit_splits(void); void mtl_ubd_stats(uint64_t *, uint64_t *); static uint64_t pcut, pccut, pbsp, pud, puc; uint64_t cut = mtl_cut_count(), ccut = mtl_copy_cut_count(), bsp = mtl_blit_splits(), ud, uc; mtl_ubd_stats(&ud, &uc);
         void mtl_ubp_stats(uint64_t *, uint64_t *, uint64_t *); static uint64_t ppm, ppr, ppf; uint64_t pm, pr, pf_; mtl_ubp_stats(&pm, &pr, &pf_);
