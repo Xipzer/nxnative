@@ -46,3 +46,8 @@ sys_resource	0x0
 # agl's two BAHS sharcb and 37 in main; 18,747 variation pairs
 shader_groups	/MapObj/=mapobj /Course/=course /UI/=ui /Audio/=audio /Kart/=kart /Ghost/=ghost /Driver/=driver /RaceCommon/=racecommon /Common/=common /DriverTex/=drivertex /Trophy/=trophy /UI3D/=ui3d /Data/=data /DriverAnim/=driveranim /AI/=ai
 shader_note	Mario Kart 8 Deluxe shaders
+
+# ---- Graphics: as before the uniform bounds and the uncompressed resolution families ----
+# The game ran without both rules; Breath of the Wild's profile has what they cost there
+shader_uniform_bounds	off
+family_compress	on

@@ -4381,7 +4381,7 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d0) {
     // Family members are written uncompressed (DM_NVN_FAMILY_NOCOMPRESS, on unless =0). With lossless compression a member read after another resolution wrote the shared bytes
     // decodes the other's compressed blocks as garbage: ASTRAL CHAIN's 1600x900 HDR targets (loaded, never cleared) came back from the 1440x810 pause menu with 1.1M non-finite
     // pixels, which bloom spread into a strobing pink / white glow. Uncompressed, the inherited bytes are only misplaced texels of the same format, as on the console
-    static int nocomp = -1; if (nocomp < 0) { const char *e = getenv("DM_NVN_FAMILY_NOCOMPRESS"); nocomp = !(e && !strcmp(e, "0")); }
+    static int nocomp = -1; if (nocomp < 0) { const char *e = getenv("DM_NVN_FAMILY_NOCOMPRESS"); nocomp = e && *e ? strcmp(e, "0") != 0 : !DM_GAME_FAMILY_COMPRESS; }   // the profile's family_compress on: compressed, as before the rule, for a game whose family members never read another size's bytes
     MTLTextureDescriptor *d = d0; if (nocomp) { d = [d0 copy]; d.allowGPUOptimizedContents = NO; }
     MTLSizeAndAlign need = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
     if (!need.size) return nil;
@@ -11399,7 +11399,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         memcpy(d, (const uint8_t *)sh->ab_buf.contents + sh->ab_off, len);
         g_cbchk_sz = NULL;
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
-            if (b->kind == NVN_RB_CBSIZE) { id<MTLBuffer> db; d[b->aid] = cbsize_block(sh, nvn_stage, &db, &g_cbchk_sz); continue; }
+            if (b->kind == NVN_RB_CBSIZE) { if (b->rw) continue; id<MTLBuffer> db; d[b->aid] = cbsize_block(sh, nvn_stage, &db, &g_cbchk_sz); continue; }   // rw: unread, the zero bank's address is in the copied table
             if (b->kind != NVN_RB_CBUF) continue;
             int reg = b->reg; const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL; void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { d[b->aid] = zero_bank_gpu(); continue; }
@@ -11623,6 +11623,7 @@ full:;
             slots[aid] = support_gpu();
             USE(support_buf(), MTLResourceUsageRead); rs_sup = aid;
         } else if (b->kind == NVN_RB_CBSIZE) {   // the uniform slots' bound sizes (DMSH_CBSIZE_BANK), which the translator's reads compare with: a read past its slot's size gives 0, as on Maxwell
+            if (b->rw) { slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue; }   // a shader built without the bounded reads (the profile's shader_uniform_bounds off): nothing reads the table
             id<MTLBuffer> db; const uint32_t *d; slots[aid] = cbsize_block(sh, nvn_stage, &db, &d); USE(db, MTLResourceUsageRead);
             if (g_cbchk && g_cbchk_sz && memcmp(g_cbchk_sz, d, CBSIZE_BYTES)) { static int nl; if (nl++ < 8) MLOG("[RED] uniform-only table: its size block differs from the full one (shader %s stage %d)", sh->key, nvn_stage); }
         } else if (b->kind == NVN_RB_PUSH) {   // NVN2 push constants (c[24]): the stage group's current block
@@ -13592,15 +13593,21 @@ static int fb_depth_snap(NvShader *fs, const nvn_rbind *b, int tid, uint64_t ser
 // this decides on
 static void fb_depth_rule(NvShader *fs, int dsw) {
     uint64_t dser = R.rt.depth->serial; int slot[4], stid[4], ns = 0, other = 0;   // texture slots that name the attachment (a copy can stand in); other: image slots, handles
+    int ci[NVN_REFL_MAXB], ct[NVN_REFL_MAXB], nc = 0;   // the bound slots first, then their serials under one lock: this runs for every draw of a pass with depth
     for (int i = 0; i < fs->rf.nb; i++) {
         const nvn_rbind *b = &fs->rf.b[i];
         int image = b->kind == NVN_RB_IMG && !b->rw && !b->atom && b->reg < 32;
         if (!image && (b->kind != NVN_RB_TEX || b->reg >= NTEX)) continue;
         int tid = (int)((image ? S.img[1][b->reg] : tex_slot_h(S.tex[1], S.img[1], b->reg)) & 0xfffff); if (!tid) continue;
-        os_unfair_lock_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; os_unfair_lock_unlock(&g_rmu);
-        if (ser != dser) continue;
-        if (!image && ns < 4) { slot[ns] = i; stid[ns++] = tid; } else other = 1;
+        ci[nc] = image ? -1 - i : i; ct[nc++] = tid;
     }
+    if (nc) {
+        os_unfair_lock_lock(&g_rmu);
+        for (int c = 0; c < nc; c++) if (!(ct[c] < g_ntreg && g_treg[ct[c]].ok && g_treg[ct[c]].t.serial == dser)) ct[c] = 0;
+        os_unfair_lock_unlock(&g_rmu);
+    }
+    for (int c = 0; c < nc; c++) { if (!ct[c]) continue;
+        if (ci[c] >= 0 && ns < 4) { slot[ns] = ci[c]; stid[ns++] = ct[c]; } else other = 1; }
     if (fs->rf.bindless && fb_texu_reads(fs, dser, R.rt.n > 0)) other = 1;   // handle tables in c2 count in colour passes, as before; a depth-only pass takes only handles it reads
     if (!ns && !other) return;
     if (!fb_depth_on()) { g_fb_dread = 1; return; }

@@ -40,3 +40,8 @@ present_interval	display
 # ---- Shader split ----
 shader_groups	/Data/=data
 shader_note	Pokémon Brilliant Diamond shaders
+
+# ---- Graphics: as before the uniform bounds and the uncompressed resolution families ----
+# The game ran without both rules; Breath of the Wild's profile has what they cost there
+shader_uniform_bounds	off
+family_compress	on

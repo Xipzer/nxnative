@@ -31,7 +31,7 @@ enum { NVN_CT_FLOAT = 0, NVN_CT_UINT, NVN_CT_INT };                             
 #define NVN_REFL_MAXV 32
 
 typedef struct {
-    uint8_t kind, rw;        // rw: storage buffer access is read_write / write / device
+    uint8_t kind, rw;        // rw: storage buffer access is read_write / write / device; CBSIZE: no read of the shader compares with the table (dmsh_build.py "unread"), which then gets the zero bank
     uint8_t dtt, dpf;        // Dummy texture when the texture slot is unbound: MTLTextureType value, pixel class
     uint16_t reg, aid;       // D3D register number, index within the argument buffer
     uint16_t off;            // TEXU / SAMPU: byte offset of the handle within the uniform buffer; SBUFU: of the 64-bit storage buffer address

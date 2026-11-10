@@ -44,3 +44,8 @@ mem_map_limit	on
 # ---- Shader split ----
 shader_groups	#arc/system_resource=system #arc/ik_effect=effect #arc/ik_pokemon=pokemon #arc/ui=layout /arc/=arc
 shader_note	Pokémon Violet shaders
+
+# ---- Graphics: as before the uniform bounds and the uncompressed resolution families ----
+# The game ran without both rules; Breath of the Wild's profile has what they cost there
+shader_uniform_bounds	off
+family_compress	on

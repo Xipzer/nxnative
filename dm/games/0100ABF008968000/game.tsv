@@ -40,3 +40,8 @@ mem_used	0x4c00000
 # system_resource/shader, two BNSH in main, and YEBIS's post effects, 3,155 shaders of a .tfxo file in a zlib stream in main (tfxo_streams)
 shader_groups	/bin/=bin /system_resource/=systemresource
 shader_note	Pokémon Sword shaders
+
+# ---- Graphics: as before the uniform bounds and the uncompressed resolution families ----
+# The game ran without both rules; Breath of the Wild's profile has what they cost there
+shader_uniform_bounds	off
+family_compress	on

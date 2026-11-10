@@ -53,7 +53,16 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
 # spirv-cross writes the translator's FMin / FMax / FClamp as fast::min / max / clamp, whose result for a NaN operand is the GPU's choice; Maxwell's FMNMX returns the other operand
 # and its saturation gives 0, as Metal's precise:: functions (IEEE fmin / fmax) do on every GPU. The M4 Pro's fast ones happen to agree, an A20 Pro's do not: Super Mario Galaxy 2's
 # GX lighting takes max(0, NaN) from light directions left at zero, and the half of Mario its fill light faces came out white on the iPhone (GitHub issue 72; vk_shaders.py PRECISE)
-def precise(msl): return re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', msl)
+# The profile key shader_uniform_bounds off (or DMSH_UNIFORM_BOUNDS=off, for a measurement): the fixed-offset uniform reads are compiled bare, as before the translator bounded
+# them (MetalUniformBounds: a read past the bound size gives 0, which Paper Mario: The Thousand-Year Door needs). Each bounded read loads its slot's size from the size table,
+# compares and selects; Breath of the Wild's fragment shaders make dozens of such reads, and its GPU time on an M4 Max went from about 5.4 to 6.2 ms a frame with them. For a game
+# that ran without the bound and never binds a slot shorter than its shaders read (the host's ub_short line says when one does). Computed-offset reads keep their bound. The key
+# is in every shader's cache key (shader_key); the environment variable is not, so it needs a DMSH_CAS of its own
+UNIFORM_BOUNDS = os.environ.get('DMSH_UNIFORM_BOUNDS', GAME.get('shader_uniform_bounds', 'on')) != 'off'
+def precise(msl):
+    msl = re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', msl)
+    if not UNIFORM_BOUNDS: import dmsh_fetch; msl = dmsh_fetch.unguard(msl)
+    return msl
 
 # spirv-cross writes OpUMulExtended / OpSMulExtended as calls of an optnone template, spvMulExtended, as Metal's compiler may fail on an inlined mulhi (spirv_msl.cpp,
 # SPVFuncImplMulExtended). The barrier keeps every product a call that is never folded: Switch 2 shaders divide by constants through the high word of a product (Ocarina of Time
@@ -1206,7 +1215,9 @@ def reflect(key, stage, msl, res):
         elif re.fullmatch(r'[a-z]+_c(\d+)', nm):
             n = int(re.fullmatch(r'[a-z]+_c(\d+)', nm).group(1))
             if 3 <= n <= 16: e.update(kind=abi.KIND_CBUF, reg=n - 3)
-            elif n == abi.CBSIZE_BANK: e.update(kind=abi.KIND_CBSIZE)   # the uniform slots' bound sizes, which the translator's bounded reads compare with
+            elif n == abi.CBSIZE_BANK:   # the uniform slots' bound sizes, which the translator's bounded reads compare with
+                e.update(kind=abi.KIND_CBSIZE)
+                if f'.{nm})' not in msl: e['unread'] = True   # no read is left that compares with it (shader_uniform_bounds off, see precise): the host makes no size block for the draw
             else: e.update(kind=abi.KIND_C1 if n == 1 else abi.KIND_DRVCB, bank=n)
         elif re.fullmatch(r'[a-z]+_s(\d+)', nm):
             e.update(kind=abi.KIND_SBUF, index=int(re.fullmatch(r'[a-z]+_s(\d+)', nm).group(1)))
