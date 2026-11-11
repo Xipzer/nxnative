@@ -5215,7 +5215,7 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
 static uint64_t g_gsb_stores, g_gsb_bytes;
 void mtl_gsb_stats(uint64_t *n, uint64_t *bytes) { *n = g_gsb_stores; *bytes = g_gsb_bytes; }   // hle_nvn.c's power line
 static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt) {
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE"); on = !e || atoi(e) != 0; if (!on) MLOG("DM_NVN_GPU_STORAGE=0: what the GPU writes into a GPU texture is not written into its storage"); }
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE"); on = e && *e ? atoi(e) != 0 : DM_GAME_GPU_STORAGE; if (!on) MLOG("what the GPU writes into a GPU texture is not written into its storage (%s)", e && *e ? "DM_NVN_GPU_STORAGE=0" : "the profile's gpu_storage off"); }
     if (!on || !mt || !tex_unc(t) || !tex_storage_ok(t, 1) || tex_cpu_written(t->serial) || tex_storage_dst(t)) return 0;
     if (rs_of(mt) != 1.0f) return 0;   // a render target made at another size (DM_RESCALE): its texels are not the storage's, and a level's region in the game's texels is not its own (CPU reads of a scaled texture are not covered, rs_rule)
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);   // a format the host widens (RGB8) or a depth view does not hold the storage's bytes

@@ -233,6 +233,8 @@ def header_one(g):
     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
     fcp = g.get('family_compress', 'off')   # textures of a resolution family keep Metal's lossless compression (nvn_mtl.m image_texture; DM_NVN_FAMILY_NOCOMPRESS overrides): on / off
     if fcp not in ('on', 'off'): sys.exit(f'{g.id}: family_compress must be on or off: {fcp}')
+    gst = g.get('gpu_storage', 'on')   # what the GPU writes into a GPU texture in storage the CPU can read is written into that storage too (nvn_mtl.m gsb_store; DM_NVN_GPU_STORAGE overrides): on / off
+    if gst not in ('on', 'off'): sys.exit(f'{g.id}: gpu_storage must be on or off: {gst}')
     sub = g.get('shader_uniform_bounds', 'on')   # fixed-offset uniform reads compare with the bound size (dmsh_build.py precise; a shader_* key, so in the shaders' cache keys): on / off
     if sub not in ('on', 'off'): sys.exit(f'{g.id}: shader_uniform_bounds must be on or off: {sub}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
@@ -300,6 +302,7 @@ def header_one(g):
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
          f'#define DM_GAME_FAMILY_COMPRESS {int(fcp == "on")}',
+         f'#define DM_GAME_GPU_STORAGE {int(gst == "on")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
