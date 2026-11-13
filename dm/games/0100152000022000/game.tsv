@@ -51,3 +51,6 @@ shader_note	Mario Kart 8 Deluxe shaders
 # The game ran without both rules; Breath of the Wild's profile has what they cost there
 shader_uniform_bounds	off
 family_compress	on
+# The GPU's writes into GPU textures' storage off: the game draws 32x32 targets (format 0x3f) every frame, 33 to 144 regions and about 1 MB a frame, and never reads them
+# from their storage. iPad Pro 13" M4 (title and demo races, 13 Nov): the frame's compute / copy time 1.75 to 1.94 ms with the stores and 0.02 to 0.05 ms without, 20 to 40 fewer encoders
+gpu_storage	off
