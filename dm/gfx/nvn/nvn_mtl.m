@@ -1491,11 +1491,14 @@ uint64_t mtl_cut_count(void);
 // as usual. Printed as "[gpuprof]" lines once the frame's last command buffer completes: one per encoder, then a frame line with the render and compute / copy time, the attachment
 // traffic and the span from the first start to the last end. dm/tools/gpuprof.py sums them by pass shape.
 // DM_NVN_GPUPROF=every:<n> profiles one frame in every n (frames that are multiples of n), each reported on its own: for a device run whose scene cannot be timed to a frame number.
+// DM_NVN_GPUPROF=slow:<ms>[:<gap>] profiles a frame whose recent frames took at least <ms> of GPU time (the newest frame the GPU has finished, a few frames back), at most one in
+// <gap> frames (default 600): the heavy scenes of a play session, wherever the player went. every:<n>,slow:<ms> does both. Each profiled frame's passes name the fragment and
+// vertex shader of their first draw (fs / vs), which identify a pass across frames and sessions
 // A render pass line also gives what it loaded and stored of its attachments (KB, the bandwidth ledger's view: DontCare stores are not counted) and the Metal pixel formats of
 // colour attachment 0 and of the depth / stencil attachment (0: none)
 enum { GP_MAX = 4096 };   // the largest timestamp heap Metal makes
 typedef struct { char kind; uint16_t w, h; uint8_t nc, depth, loads; uint32_t draws, seg; uint64_t pass; uint32_t ld_kb, st_kb; uint16_t cfmt, dfmt; char fs[17], vs[17]; } gp_lab;   // seg: the command buffer (segment) of the submission it is in
-static id<MTL4CounterHeap> g_gp_heap; static gp_lab g_gp_lab[GP_MAX / 2]; static int g_gp_n, g_gp_state, g_gp_cur = -1; static long g_gp_f0 = -2, g_gp_f1, g_gp_every; static uint64_t g_gp_frame;
+static id<MTL4CounterHeap> g_gp_heap; static gp_lab g_gp_lab[GP_MAX / 2]; static int g_gp_n, g_gp_state, g_gp_cur = -1; static long g_gp_f0 = -2, g_gp_f1, g_gp_every; static uint64_t g_gp_frame; static double g_gp_slow; static long g_gp_slow_gap = 600, g_gp_slow_last = -1000000;
 static const void *g_gp_e;   // the encoder g_gp_cur belongs to: m4_end also ends the upload / diagnostics / present encoders, which may end while a profiled pass is open (#531)
 static _Atomic int g_gp_busy;   // a periodic profile's report has not been printed yet: the heap is still being read
 static uint64_t g_bw_load, g_bw_store, g_gp_bw_l0, g_gp_bw_s0;   // the bandwidth ledger (defined with the pass statistics below) and its values at the last render pass end
@@ -1506,11 +1509,20 @@ static int g_gp_split = -1;
 static int gp_active(void) {
     if (__builtin_expect(g_gp_f0 == -1, 1)) return 0;
     if (g_gp_f0 == -2) { const char *e = getenv("DM_NVN_GPUPROF");
-        if (e && !strncmp(e, "every:", 6)) { g_gp_every = atol(e + 6); g_gp_f0 = g_gp_every > 0 ? 0 : -1; if (g_gp_every > 0) MLOG("DM_NVN_GPUPROF: one frame in every %ld profiled", g_gp_every); }
+        const char *sl = e ? strstr(e, "slow:") : NULL;
+        if (sl) { g_gp_slow = atof(sl + 5); const char *c = strchr(sl + 5, ':'); if (c) g_gp_slow_gap = atol(c + 1); if (g_gp_slow_gap < 60) g_gp_slow_gap = 60;
+                  if (g_gp_slow > 0) MLOG("DM_NVN_GPUPROF: a frame profiled when the frames before it took %.1f ms of GPU time or more, at most one in %ld frames", g_gp_slow, g_gp_slow_gap); }
+        if (e && !strncmp(e, "every:", 6)) { g_gp_every = atol(e + 6); if (g_gp_every > 0) MLOG("DM_NVN_GPUPROF: one frame in every %ld profiled", g_gp_every); }
+        if (g_gp_every > 0 || g_gp_slow > 0) { g_gp_f0 = 0; if (g_gp_every <= 0) g_gp_every = LONG_MAX; }   // a periodic profile (gp_periodic_finish reports it as soon as its frame is done)
         else { g_gp_f0 = e ? atol(e) : -1; g_gp_f1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : g_gp_f0; }
         if (g_gp_f0 < 0) return 0; }
     long f = (long)atomic_load(&g_cur_frame);
-    if (g_gp_every > 0) return f > 0 && f % g_gp_every == 0;
+    if (g_gp_every > 0) {
+        if (f > 0 && f % g_gp_every == 0) return 1;
+        if (g_gp_slow > 0 && f == g_gp_slow_last) return 1;   // the rest of the frame chosen at its first encoder
+        if (g_gp_slow > 0 && f - g_gp_slow_last >= g_gp_slow_gap) {   // the newest frame whose GPU time is known (the ring keeps the last few)
+            for (long k = 2; k <= 6; k++) { double g = f > k ? mtl_gpu_ms((uint64_t)(f - k)) : -1; if (g < 0) continue; if (g >= g_gp_slow) { g_gp_slow_last = f; return 1; } break; } }
+        return 0; }
     return f >= g_gp_f0 && f <= g_gp_f1;
 }
 static void gp_report(int n, gp_lab *lab, uint64_t frame);
@@ -5160,13 +5172,16 @@ static void sd_finish(void);
 // the first draw does not blend and writes all channels, every covered pixel is rewritten by it, and the original content is not visible (Switch immediate-mode rendering has no such cost; on TBDR load = reading the whole thing from memory into the tile)
 static const p_draw *g_fd_dw; static const p_draw_idx *g_fd_di;   // The draw that opens the pass (one of non-indexed / indexed); non-null only while draw() is opening a pass
 static uint64_t g_fd_n;         // Cumulative number of attachments judged elidable
-static int g_fd_why;            // Reason for the most recent failure (Q line of PASSDUMP: 1 no program 2 shader 3 attachment 4 blend/mask/raster 5 depth-stencil test 6 vertex count 7 position attribute 8 format/stream 9 out of bounds 10 address 11 geometry)
+static int g_fd_why;            // Reason for the most recent failure (Q line of PASSDUMP: 1 no program 2 shader (21 position not from one attribute, 22 may discard, 23 alpha test or logic op, 24 sample mask or channel not written) 3 attachment 4 blend/mask/raster 5 depth-stencil test 6 vertex count 7 position attribute 8 format/stream 9 out of bounds 10 address 11 geometry)
 static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level);
 static int pf_is_float(MTLPixelFormat f) {   // Float color formats that can store NaN (sentinel choice for the load-elision probe; RGB9E5 cannot store NaN and does not count)
     switch (f) { case MTLPixelFormatR16Float: case MTLPixelFormatRG16Float: case MTLPixelFormatRGBA16Float: case MTLPixelFormatR32Float:
         case MTLPixelFormatRG32Float: case MTLPixelFormatRGBA32Float: case MTLPixelFormatRG11B10Float: return 1; default: return 0; }
 }
 static int fz_load_covers(int i, id<MTLTexture> t, NSUInteger level);
+// DM_NVN_LOAD_ELIDE=1: the load elision above without the rest of the TBDR optimizations (DM_NVN_TBDR=1 turns them all on). It needs no read inference, so bindless
+// textures do not defeat it: the draw that opens the pass rewrites every pixel of the attachment it covers. =ab with DM_AB alternates it by phase; DM_NVN_LOADPROBE checks it
+static int load_elide_on(void) { static int v = -1; if (v < 0) { v = sw_mode("DM_NVN_LOAD_ELIDE", 0); if (v == 1) MLOG("DM_NVN_LOAD_ELIDE=1: a colour attachment the pass's first draw covers in full is not loaded"); } return sw_on(v); }
 static NSMutableArray *g_lp;    // DM_NVN_LOADPROBE=1 / 2 / 3 (two constant sentinel values / NaN - under float formats normal shader output cannot reach NaN, ruling out numeric coincidence): attachments judged elidable are cleared to the sentinel color instead, and at pass end the remaining sentinel pixels are read back and counted (diagnostic: should be 0)
 static void lp_finish(void);
 // Same-target continuation: when the game calls SetRenderTargets again on the same set of targets (with no copy / dispatch / clear in between) the pass is not ended - on TBDR this saves one full write-back + load.
@@ -5512,7 +5527,7 @@ static void *rp_begin_ex_(int clear_only) {
         pd.colorAttachments[i].clearColor = R.cc[i];
         if (R.clear_c[i]) PD("C %llu c%d cleared to %g,%g,%g,%g", g_stat_pass + 1, i, R.cc[i].red, R.cc[i].green, R.cc[i].blue, R.cc[i].alpha);
         if (bcrt_is(pd.colorAttachments[i].texture)) { pd.colorAttachments[i].storeAction = MTLStoreActionStore; continue; }   // a shadow (bcrt_attach): loaded and stored as is, outside the bookkeeping below
-        int cov = tbdr_on() && !R.clear_c[i] && (g_fd_dw || g_fd_di) && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
+        int cov = (tbdr_on() || load_elide_on()) && !R.clear_c[i] && (g_fd_dw || g_fd_di) && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
         if (!R.clear_c[i] && (g_fd_dw || g_fd_di) && !cov) PD("Q %llu c%d load cannot be skipped why=%d", g_stat_pass + 1, i, g_fd_why);
         if (cov) {
             static int probe = -1; if (probe < 0) { probe = getenv("DM_NVN_LOADPROBE") ? atoi(getenv("DM_NVN_LOADPROBE")) : 0; if (probe) MLOG("DM_NVN_LOADPROBE: attachments whose load can be skipped are cleared to a sentinel color and read back to check"); }
@@ -11932,7 +11947,13 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
     int n = dw ? dw->count : di->count, prim = dw ? dw->prim : di->prim;
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr) return g_fd_why = 1, 0;
     NvShader *vs = pr->sh[0], *fs = pr->sh[1];
-    if (!vs || !fs || vs->rf.pos_attr < 0 || fs->rf.may_discard || atest_on() || lop_on() || fs->rf.writes_smask || !(fs->rf.color_mask >> i & 1)) return g_fd_why = 2, 0;   // atest_on: the alpha test may drop fragments; lop_on: the logic operation reads the target
+    if (!vs || !fs) return g_fd_why = 2, 0;
+    if (vs->rf.pos_attr < 0) { static int ub = -1; if (ub < 0) ub = getenv("DM_NVN_LOAD_ELIDE_BOUND") != NULL;   // diagnostic: what eliding these would save at most (the picture may break)
+        if (ub && n >= 3 && n <= 6 && !(S.color.blend_en >> i & 1) && ((S.chmask.mask >> (4 * i)) & 0xf) == 0xf && !fs->rf.may_discard) return 1;
+        return g_fd_why = 21, 0; }   // the position is not read from one vertex attribute (made from the vertex ID, or computed)
+    if (fs->rf.may_discard) return g_fd_why = 22, 0;
+    if (atest_on() || lop_on()) return g_fd_why = 23, 0;
+    if (fs->rf.writes_smask || !(fs->rf.color_mask >> i & 1)) return g_fd_why = 24, 0;   // atest_on: the alpha test may drop fragments; lop_on: the logic operation reads the target
     if (!t || t.sampleCount != 1 || t.textureType == MTLTextureType3D) return g_fd_why = 3, 0;
     if (fs->rf.omap_known && pf_chan_bits(t.pixelFormat) & ~(fs->rf.omap >> (4 * i))) return g_fd_why = 4, 0;   // a stored channel outside the shader's output map keeps its old value (pso_build's write mask)
     if ((S.color.blend_en >> i & 1) || ((S.chmask.mask >> (4 * i)) & 0xf) != 0xf || S.ms.a2c || S.poly.mode != NVN_POLYGON_MODE_FILL) return g_fd_why = 4, 0;
@@ -14656,7 +14677,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         }
     }
     g_stat_draw++;
-    if (g_gp_cur >= 0 && g_gp_split > 0 && !g_gp_lab[g_gp_cur].fs[0] && g_gp_lab[g_gp_cur].kind == 'R') { if (pr->sh[1]) memcpy(g_gp_lab[g_gp_cur].fs, pr->sh[1]->key, 16); else g_gp_lab[g_gp_cur].fs[0] = '-'; if (pr->sh[0]) memcpy(g_gp_lab[g_gp_cur].vs, pr->sh[0]->key, 16); }
+    if (g_gp_cur >= 0 && !g_gp_lab[g_gp_cur].fs[0] && g_gp_lab[g_gp_cur].kind == 'R') { if (pr->sh[1]) memcpy(g_gp_lab[g_gp_cur].fs, pr->sh[1]->key, 16); else g_gp_lab[g_gp_cur].fs[0] = '-'; if (pr->sh[0]) memcpy(g_gp_lab[g_gp_cur].vs, pr->sh[0]->key, 16); }
     if (enc_label_on() && !g_el_draws++ && pr->sh[1]) { memcpy(g_el_key, pr->sh[1]->key, 8); g_el_key[8] = 0; }
     if (passdump()) {   // Characteristics of a render pass's first draw (to judge whether the load can be omitted: full screen, no blending, writes all channels, does not depend on depth); with DM_NVN_PASSDUMP_ALL every draw is recorded
         static uint64_t last_pass = ~0ull; static int all = -1; if (all < 0) all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;

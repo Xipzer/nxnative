@@ -101,5 +101,48 @@ class GpuProf(unittest.TestCase):
             with contextlib.redirect_stderr(err): self.assertEqual(gpuprof.main([str(p), '--timeline', '7']), 1)
 
 
+
+class SessionModes(unittest.TestCase):
+    """--by pass, --heavy and --waste on frames whose passes name their first fragment shader (fs) and vertex shader (vs)"""
+    def run_tool(self, lines, *args):
+        with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False) as fh: fh.write('\n'.join(lines) + '\n'); path = fh.name
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out): rc = gpuprof.main([path, *args])
+            return rc, out.getvalue()
+        finally: os.unlink(path)
+
+    LOG = [
+        rp(600, 0, 400.0, 10, 1600, 900, 4, 1, 300, 0.0, 0, 28125, 70, 260) + ' fs aaaaaaaabbbbbbbb vs 1111111122222222',
+        rp(600, 1, 100.0, 11, 1600, 900, 1, 0, 1, 420.0, 5625, 5625, 115, 0) + ' fs ccccccccdddddddd vs 3333333344444444',
+        rp(600, 2, 90.0, 12, 1600, 900, 1, 0, 1, 530.0, 5625, 5625, 115, 0) + ' fs eeeeeeeeffffffff vs 3333333344444444',
+        rp(1200, 0, 900.0, 20, 1600, 900, 4, 1, 900, 0.0, 0, 28125, 70, 260) + ' fs aaaaaaaabbbbbbbb vs 1111111122222222',
+        rp(1200, 1, 120.0, 21, 1600, 900, 1, 0, 1, 920.0, 5625, 5625, 115, 0) + ' fs ccccccccdddddddd vs 3333333344444444',
+    ]
+
+    def test_fs_parsed(self):
+        frames, _ = gpuprof.parse(self.LOG)
+        self.assertEqual(frames[600][0].fs, 'aaaaaaaabbbbbbbb')
+        self.assertEqual(gpuprof.pass_key(frames[600][1])[:8], 'cccccccc')
+
+    def test_by_pass_follows_a_pass_across_frames(self):
+        rc, out = self.run_tool(self.LOG, '--by', 'pass', '--quiet')
+        self.assertEqual(rc, 0)
+        row = next(l for l in out.splitlines() if l.strip().startswith('aaaaaaaa'))
+        self.assertIn('0.65', row)   # (400 + 900) / 2 us = 0.65 ms a frame
+
+    def test_heavy_lists_the_longest_frame_first(self):
+        rc, out = self.run_tool(self.LOG, '--heavy', '1', '--per', '1')
+        self.assertEqual(rc, 0)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith('frame 1200:'), lines[0])
+        self.assertIn('aaaaaaaa', lines[1])
+
+    def test_waste_counts_a_loaded_pass_of_the_same_shape(self):
+        rc, out = self.run_tool(self.LOG, '--waste')
+        self.assertEqual(rc, 0)
+        row = next(l for l in out.splitlines() if 'same shape as the one before it' in l)
+        self.assertEqual(row.split()[-3], '0.5')   # one in frame 600, none in frame 1200: 0.5 per frame
+
 if __name__ == '__main__':
     unittest.main()

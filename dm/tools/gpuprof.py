@@ -10,6 +10,13 @@ line per phase. This tool reads both:
   gpuprof.py log.txt --frames 600 1200     only those frames
   gpuprof.py log.txt --timeline 600        every encoder of frame 600 in GPU order, with the idle gaps between them
   gpuprof.py log.txt --ab                  the [ab] phases: medians per configuration and the difference from the base
+  gpuprof.py log.txt --by pass             the same by pass identity: its first draw's fragment shader and its shape, so a pass is followed across frames and scenes
+  gpuprof.py log.txt --heavy 5             the five frames with the longest span, each with its costliest passes
+  gpuprof.py log.txt --waste               where attachment traffic and pass overhead go: passes that load what they draw over, little work on large targets,
+                                           runs of passes of one shape (one target, likely), compute / copy encoders between passes
+
+A session log of a whole play session (DM_NVN_GPUPROF=every:<n>,slow:<ms>) is read the same way: the groups are means over every profiled frame, and --heavy and --by pass
+name the passes that cost most where the game was heaviest, wherever the player went.
 
 Times are GPU timestamps taken where each encoder begins and ends (relaxed: encoders may overlap), so the sum over encoders is not the frame's GPU time; the frame line's
 span (first start to last end) is closer to it. See docs/agents/05-debugging.md, "GPU time on the device".
@@ -17,7 +24,7 @@ span (first start to last end) is closer to it. See docs/agents/05-debugging.md,
 import argparse, collections, re, statistics, sys
 
 ENC = re.compile(r'\[gpuprof\] F(\d+)\s+(\d+)\s+([\d.]+) us (render pass|compute / copy)(.*)')
-RP = re.compile(r'^ (\d+) (\d+)x(\d+) colors (\d+) depth (\d+) loads (\d+) draws (\d+) start ([+-][\d.]+) seg (\d+)(?: load (\d+) KB store (\d+) KB)?(?: fmt (\d+)/(\d+))?')
+RP = re.compile(r'^ (\d+) (\d+)x(\d+) colors (\d+) depth (\d+) loads (\d+) draws (\d+) start ([+-][\d.]+) seg (\d+)(?: load (\d+) KB store (\d+) KB)?(?: fmt (\d+)/(\d+))?(?: fs (\S+))?(?: vs (\S+))?')
 CP = re.compile(r'^ after pass (\d+) start ([+-][\d.]+) seg (\d+) copies (\d+) \(uniform updates (\d+)\) dispatches (\d+)')
 FRAME = re.compile(r'\[gpuprof\] frame (\d+): render ([\d.]+) ms, compute / copy ([\d.]+) ms over (\d+) encoders.*?first start to last end ([\d.]+) ms')
 AB = re.compile(r'\[ab\] phase (\d+) (\S+): (\d+) frames, GPU p50 ([\d.]+) / p90 ([\d.]+) / mean ([\d.]+) ms, frame p50 ([\d.]+) / p90 ([\d.]+) / mean ([\d.]+) ms'
@@ -39,7 +46,7 @@ def fmt_name(v):
     return MTL_FORMATS.get(v, str(v)) if v else '-'
 
 
-Enc = collections.namedtuple('Enc', 'frame idx us kind pass_ w h colors depth loads draws start seg load_kb store_kb cfmt dfmt copies ubd dispatches')
+Enc = collections.namedtuple('Enc', 'frame idx us kind pass_ w h colors depth loads draws start seg load_kb store_kb cfmt dfmt copies ubd dispatches fs', defaults=('',))
 
 
 def parse(lines):
@@ -55,7 +62,7 @@ def parse(lines):
                 if not r: continue
                 g = [int(x) if x is not None else 0 for x in (r.group(1), r.group(2), r.group(3), r.group(4), r.group(5), r.group(6), r.group(7))]
                 e = Enc(f, idx, us, 'R', g[0], g[1], g[2], g[3], g[4], g[5], g[6], float(r.group(8)), int(r.group(9)),
-                        int(r.group(10) or 0), int(r.group(11) or 0), int(r.group(12) or 0), int(r.group(13) or 0), 0, 0, 0)
+                        int(r.group(10) or 0), int(r.group(11) or 0), int(r.group(12) or 0), int(r.group(13) or 0), 0, 0, 0, r.group(14) or '')
             else:
                 c = CP.match(rest)
                 if not c: continue
@@ -91,6 +98,45 @@ def shape_key(e):
     return f'{e.w}x{e.h} {e.colors}c{z} {f}{"/" if f and d else ""}{d}'.rstrip()
 
 
+def pass_key(e):
+    """A pass by its first draw's fragment shader (8 digits; '-' none, '?' a log without them) and its shape: the same pass in every frame that draws it"""
+    if e.kind != 'R': return 'compute / copy'
+    return f'{(e.fs or "?")[:8]:8s} {shape_key(e)}'
+
+
+def heavy(frames, n, per):
+    """The n frames with the longest span (first start to last end), each with its costliest render passes"""
+    st = sorted(((frame_stats(es), f) for f, es in frames.items()), key=lambda x: -x[0]['span_us'])[:n]
+    for s, f in st:
+        print(f'frame {f}: span {s["span_us"] / 1e3:.2f} ms, {s["passes"]} passes, {s["draws"]} draws, attachments load {s["load_kb"] / 1024:.0f} MB store {s["store_kb"] / 1024:.0f} MB')
+        for e in sorted((e for e in frames[f] if e.kind == 'R'), key=lambda e: -e.us)[:per]:
+            print(f'    {e.us / 1e3:6.2f} ms  {pass_key(e):48s} draws {e.draws:5d} loads {e.loads} load {e.load_kb / 1024:6.1f} MB store {e.store_kb / 1024:6.1f} MB')
+
+
+def waste(frames):
+    """Means per frame of the patterns that cost time or bandwidth without drawing much (heuristics; read with --timeline for one frame)"""
+    nf = len(frames) or 1; acc = collections.defaultdict(lambda: [0, 0.0, 0.0])   # count, us, MB
+    def add(k, e, mb): a = acc[k]; a[0] += 1; a[1] += e.us; a[2] += mb
+    for f, es in frames.items():
+        ref = max((e.w * e.h for e in es if e.kind == 'R' and e.colors), default=0) or 1
+        rp = sorted((e for e in es if e.kind == 'R'), key=lambda e: e.start)
+        for e in es:
+            if e.kind == 'C': add('compute / copy encoders between passes', e, 0); continue
+            mb = (e.load_kb + e.store_kb) / 1024; big = e.w * e.h >= ref / 8
+            add('every render pass', e, mb)
+            if e.load_kb: add('passes that load attachments (the load part only)', e._replace(us=0), e.load_kb / 1024)
+            if big and e.draws <= 2 and e.loads: add('a target of 1/8 the frame or more, <=2 draws, loaded', e, mb)
+            if big and e.draws <= 8 and e.load_kb + e.store_kb > 4096: add('a target of 1/8 the frame or more, <=8 draws, >4 MB of traffic', e, mb)
+            if e.draws == 0: add('passes with no draw (clears, resolves)', e, mb)
+            if e.w * e.h <= 64 * 64: add('tiny passes (<=64x64)', e, mb)
+        for a, b in zip(rp, rp[1:]):   # adjacent passes of one shape and formats: often one target ended and opened again, which a merge would save
+            if shape_key(a) == shape_key(b) and b.loads: add('a pass of the same shape as the one before it, loading (likely the same target)', b, b.load_kb / 1024)
+    print(f'mean per frame over {nf} frames (times overlap; MB = attachment load + store as the host counts it):')
+    print(f'  {"pattern":80s} {"count":>7s} {"ms":>7s} {"MB":>8s}')
+    for k, (n, us, mb) in sorted(acc.items(), key=lambda kv: -kv[1][2]):
+        print(f'  {k:80s} {n / nf:7.1f} {us / nf / 1e3:7.2f} {mb / nf:8.1f}')
+
+
 def class_key(e, ref_area):
     """A size class relative to the frame's largest colour pass (ref_area pixels), by the scale per axis: the same classes for every game and resolution.
     Passes with four colour attachments or more are their own class (a deferred renderer's G-buffer); <=2 draws marks full-screen work (post-processing, copies)"""
@@ -112,7 +158,7 @@ def aggregate(frames, by='shape', only=None):
         nf += 1
         ref = max((e.w * e.h for e in es if e.kind == 'R' and e.colors), default=0)
         for e in es:
-            k = shape_key(e) if by == 'shape' else class_key(e, ref)
+            k = shape_key(e) if by == 'shape' else pass_key(e) if by == 'pass' else class_key(e, ref)
             a = agg[k]; a[0] += 1; a[1] += e.us; a[2] += e.draws; a[3] += e.load_kb; a[4] += e.store_kb
     rows = [(k, v[0] / nf, v[1] / nf, v[2] / nf, v[3] / nf, v[4] / nf) for k, v in agg.items()] if nf else []
     rows.sort(key=lambda r: -r[2])
@@ -151,7 +197,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('log', help='the run log or Documents/log.txt')
     ap.add_argument('--frames', type=int, nargs='+', help='only these profiled frames')
-    ap.add_argument('--by', choices=('shape', 'class'), default='shape', help='group passes by exact shape (default) or by size class relative to the largest colour pass')
+    ap.add_argument('--by', choices=('shape', 'class', 'pass'), default='shape', help='group passes by exact shape (default), by size class relative to the largest colour pass, or by pass (first fragment shader + shape)')
+    ap.add_argument('--heavy', type=int, metavar='N', help='the N frames with the longest span, each with its costliest passes')
+    ap.add_argument('--per', type=int, default=8, help='with --heavy: passes listed per frame (default 8)')
+    ap.add_argument('--waste', action='store_true', help='the patterns that cost time or attachment traffic without drawing much')
+    ap.add_argument('--quiet', action='store_true', help='no per-frame lines before the groups')
     ap.add_argument('--top', type=int, default=25, help='groups listed (default 25); the rest are summed as "other"')
     ap.add_argument('--timeline', type=int, metavar='FRAME', help='every encoder of that frame in GPU order')
     ap.add_argument('--ab', action='store_true', help='summarise the DM_AB [ab] lines instead')
@@ -179,6 +229,9 @@ def main(argv=None):
     if not frames: print('no [gpuprof] encoder lines (DM_NVN_GPUPROF=<frame> or every:<n>)', file=sys.stderr); return 1
     only = set(a.frames) if a.frames else None
 
+    if only: frames = collections.OrderedDict((f, es) for f, es in frames.items() if f in only)
+    if a.heavy: heavy(frames, a.heavy, a.per); return 0
+    if a.waste: waste(frames); return 0
     if a.timeline is not None:
         es = frames.get(a.timeline)
         if not es: print(f'frame {a.timeline} was not profiled; profiled: {" ".join(map(str, list(frames)[:20]))}', file=sys.stderr); return 1
@@ -188,13 +241,13 @@ def main(argv=None):
             gap = max(0.0, e.start - end); end = max(end, e.start + e.us)
             if e.kind == 'R':
                 what = (f'pass {e.pass_} {e.w}x{e.h} {e.colors}c{"+d" if e.depth else ""} draws {e.draws} loads {e.loads} '
-                        f'load {e.load_kb} KB store {e.store_kb} KB {fmt_name(e.cfmt)}/{fmt_name(e.dfmt)}')
+                        f'load {e.load_kb} KB store {e.store_kb} KB {fmt_name(e.cfmt)}/{fmt_name(e.dfmt)}{" fs " + e.fs[:8] if e.fs else ""}')
             else:
                 what = f'compute / copy after pass {e.pass_}: copies {e.copies} (uniform updates {e.ubd}) dispatches {e.dispatches}'
             print(f'  {e.idx:4d} +{e.start:9.1f} {e.us:8.1f}{"  gap %.1f" % gap if gap >= 1 else "":>12s}  {what}')
         return 0
 
-    for f, es in frames.items():
+    for f, es in (() if a.quiet else frames.items()):
         if only and f not in only: continue
         s = frame_stats(es); fl = flines.get(f)
         print(f'frame {f}: {s["encoders"]} encoders ({s["passes"]} render passes), sum {s["sum_us"] / 1e3:.2f} ms, span {s["span_us"] / 1e3:.2f} ms, idle {s["gap_us"] / 1e3:.2f} ms, '
